@@ -7,7 +7,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from behave import given, when, then
+from behave import given, when, then, use_step_matcher
 
 from environment import CLI_BIN, REPO_ROOT, run_cli, mock_reset, mock_script, mock_prompts
 
@@ -233,7 +233,10 @@ def step_unified_diff_stored(context, path):
 # ---------------------------------------------------------------------------
 
 
-@when('I run "{cmdline}"')
+use_step_matcher("re")
+
+
+@when(r'I run "(?P<cmdline>[^"]+)"')
 def step_run(context, cmdline):
     extra_env = getattr(context, "extra_env", None)
     # If a previous step prepared a diff, pipe it on stdin when the command
@@ -244,6 +247,9 @@ def step_run(context, cmdline):
     if "-" in parts[1:] and getattr(context, "last_diff", None) is not None:
         stdin = context.last_diff
     run_cli(context, cmdline, stdin=stdin, extra_env=extra_env)
+
+
+use_step_matcher("parse")
 
 
 @when('I run "{cmdline}" with that diff on stdin')
@@ -368,6 +374,20 @@ def step_output_contains_finding(context):
 @then('a file "{path}" exists in the working directory')
 def step_file_exists(context, path):
     assert (context.workdir / path).exists(), f"missing: {context.workdir/path}"
+
+
+@then('the file "{path}" exists')
+def step_file_exists_any(context, path):
+    full = _resolve_artifact(context, path)
+    assert full.exists(), f"missing: {full}"
+
+
+@then('the output still contains "{needle}"')
+def step_output_still_contains(context, needle):
+    assert needle in context.last_run["stdout"], (
+        f'expected stdout to contain {needle!r}\n'
+        f'actual stdout:\n{context.last_run["stdout"]}'
+    )
 
 
 @then('a file "{path}" exists in "{rel}"')

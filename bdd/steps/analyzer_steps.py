@@ -87,6 +87,15 @@ def step_run_again_simple(context, cmdline):
     run_cli(context, cmdline, cwd=context.sample_project_dir)
 
 
+@when('I run "{cmdline}" inside it')
+def step_run_inside_it(context, cmdline):
+    snap = context.sample_project_dir / ".review-cache/project.json"
+    if snap.exists() and not hasattr(context, "mtime_t0"):
+        context.mtime_t0 = snap.stat().st_mtime
+    time.sleep(0.05)
+    run_cli(context, cmdline, cwd=context.sample_project_dir)
+
+
 @then('the mtime of "{path}" is still T0')
 def step_mtime_unchanged(context, path):
     full = context.sample_project_dir / path

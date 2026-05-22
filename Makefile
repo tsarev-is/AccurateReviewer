@@ -1,12 +1,13 @@
 # AccurateReviewer — AI code review tool driven by BDD feature files.
 # The feature files in bdd/ are the single source of truth for the tool's
-# behaviour. The Go code in cmd/ and internal/ is one possible implementation.
+# behaviour. The Go code in src/ is one possible implementation.
 
 GO := $(shell which go 2>/dev/null \
         || find /usr/local /opt/homebrew/bin -name go -type f 2>/dev/null \
            | head -1 \
         || echo go)
 
+SRC_DIR    := src
 BIN_DIR    := bin
 CLI_BIN    := $(BIN_DIR)/accurate-reviewer
 MOCK_BIN   := $(BIN_DIR)/mock-llm
@@ -42,13 +43,13 @@ setup: setup-python
 	@echo "Go binary: $(GO)"
 	@$(GO) version
 	@echo "Resolving Go module dependencies..."
-	$(GO) mod tidy
+	cd $(SRC_DIR) && $(GO) mod tidy
 	@mkdir -p $(BIN_DIR)
 
 build: setup
 	@echo "Building Go binaries..."
-	$(GO) build -o $(CLI_BIN)  ./cmd/accurate-reviewer/
-	$(GO) build -o $(MOCK_BIN) ./cmd/mock-llm/
+	cd $(SRC_DIR) && $(GO) build -o ../$(CLI_BIN)  ./cmd/accurate-reviewer/
+	cd $(SRC_DIR) && $(GO) build -o ../$(MOCK_BIN) ./cmd/mock-llm/
 	@echo "Build complete."
 
 # Per-feature targets. Each maps to a Gherkin tag.
