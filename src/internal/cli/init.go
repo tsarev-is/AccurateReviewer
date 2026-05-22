@@ -30,14 +30,29 @@ budget:
   max_usd: 1.00
 
 llm:
-  provider: mock
+  # provider: claude | codex | mock
+  #   claude  -> spawns the Claude Code CLI (claude -p, prompt on stdin)
+  #   codex   -> spawns the Codex CLI       (codex exec, prompt on stdin)
+  #   mock    -> spawns ar-mock-cli (the BDD test fake; not for prod)
+  provider: claude
   master:
     model: claude-opus-4-7
     max_output_tokens: 4096
   worker:
     model: claude-sonnet-4-6
     max_output_tokens: 2048
+  # API key is read from env by the CLI itself (claude/codex handle auth);
+  # named here only so it gets passed through to the subprocess.
   api_key_env: ANTHROPIC_API_KEY
+  # Override the spawn parameters if your CLI is named differently, lives
+  # outside PATH, or needs extra flags. Empty fields fall back to defaults
+  # derived from the provider.
+  cli:
+    bin: ""
+    args: []
+    model_flag: ""
+    timeout_seconds: 30
+    pass_env: []
 
 secrets:
   enabled: true

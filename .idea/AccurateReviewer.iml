@@ -1,8 +1,27 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <module type="WEB_MODULE" version="4">
-  <component name="Go" enabled="true" />
+  <component name="Go" enabled="true">
+    <buildTags>
+      <option name="customFlags">
+        <array />
+      </option>
+    </buildTags>
+    <disabledVendoring>
+      <option name="modules">
+        <set>
+          <option value="$MODULE_DIR$/src" />
+        </set>
+      </option>
+    </disabledVendoring>
+  </component>
+  <component name="ModuleRunConfigurationManager">
+    <shared />
+  </component>
   <component name="NewModuleRootManager">
-    <content url="file://$MODULE_DIR$" />
+    <content url="file://$MODULE_DIR$">
+      <excludeFolder url="file://$MODULE_DIR$/.venv" />
+      <excludeFolder url="file://$MODULE_DIR$/bin" />
+    </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>

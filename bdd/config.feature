@@ -88,9 +88,53 @@ Feature: .review.yml configuration parsing and validation
       """
       version: 1
       llm:
-        provider: anthropic
+        provider: claude
         api_key_env: ANTHROPIC_API_KEY
       """
     When I run "accurate-reviewer config show"
     Then the output does NOT contain "sk-test-do-not-leak"
     And the output contains "api_key: REDACTED"
+
+  Scenario: An unknown provider is rejected
+    Given a file ".review.yml" with content:
+      """
+      version: 1
+      checks: { security: true }
+      llm: { provider: openai }
+      """
+    When I run "accurate-reviewer config show"
+    Then the exit code is 2
+    And stderr contains "llm.provider: 'openai' is not one of [claude, codex, mock]"
+
+  Scenario: CLI defaults are exposed by `config show`
+    # `provider: claude` with no `cli:` block should resolve to the upstream
+    # Claude Code CLI invocation. The resolved view must show those defaults
+    # so users can spot when their override is wrong.
+    Given a file ".review.yml" with content:
+      """
+      version: 1
+      checks: { security: true }
+      llm: { provider: claude }
+      """
+    When I run "accurate-reviewer config show"
+    Then the exit code is 0
+    And the output contains "provider: claude"
+    And the output contains "bin: claude"
+    And the output contains "- -p"
+
+  Scenario: A custom CLI bin override is preserved
+    Given a file ".review.yml" with content:
+      """
+      version: 1
+      checks: { security: true }
+      llm:
+        provider: codex
+        cli:
+          bin: /opt/codex/bin/codex
+          args: ["exec", "--quiet"]
+          timeout_seconds: 120
+      """
+    When I run "accurate-reviewer config show"
+    Then the exit code is 0
+    And the output contains "bin: /opt/codex/bin/codex"
+    And the output contains "timeout_seconds: 120"

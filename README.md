@@ -38,7 +38,8 @@ any code leaves the developer's machine — leaked tokens never reach the LLM.
 - Secrets scanner (regex rules + shannon entropy on sensitive assignments).
 - `.review.yml` parser/validator.
 - Console reporter.
-- Mock LLM provider for tests; Anthropic provider stubbed.
+- LLM integration via local CLI subprocess (`claude`, `codex`, or the
+  test fake `ar-mock-cli`) — no HTTP client compiled in.
 
 ## Project layout
 
@@ -55,8 +56,7 @@ any code leaves the developer's machine — leaked tokens never reach the LLM.
 │   ├── environment.py      # behave hooks: per-scenario temp dir + mock LLM
 │   └── steps/              # step adapters that drive the binary as a subprocess
 ├── cmd/
-│   ├── accurate-reviewer/  # main CLI
-│   └── mock-llm/           # controllable LLM stand-in used by the BDD suite
+│   └── accurate-reviewer/  # main CLI (only one binary; LLM access is via subprocess)
 ├── internal/
 │   ├── analyzer/  config/  diff/  llm/  master/
 │   ├── report/    sanitizer/  secrets/  worker/  cli/
@@ -72,7 +72,7 @@ any code leaves the developer's machine — leaked tokens never reach the LLM.
 
 ```bash
 make setup        # python venv + pinned deps + go mod tidy
-make build        # compile both binaries into bin/
+make build        # compile the Go binary into bin/
 make test-all     # run the full BDD suite
 ```
 
@@ -98,11 +98,20 @@ accurate-reviewer analyze              # builds the project snapshot
 accurate-reviewer review --from HEAD~1 --to HEAD
 ```
 
-The default `.review.yml` ships with `llm.provider: mock` so the CLI runs
-end-to-end without any API key. Switch to `provider: anthropic` and set
-`ANTHROPIC_API_KEY` to go live — the Anthropic provider in this MVP is a
-stub that returns `ErrNotConfigured` on purpose; wiring up the real
-endpoint is the first task on the path to v0.2.
+The default `.review.yml` ships with `llm.provider: claude`. The tool only
+talks to models via a local CLI subprocess — pick the provider matching the
+CLI you already have authenticated:
+
+| `llm.provider` | Spawns                       | Auth                                  |
+|----------------|------------------------------|---------------------------------------|
+| `claude`       | `claude -p` (prompt on stdin) | Whatever `claude login` left on disk  |
+| `codex`        | `codex exec` (prompt on stdin)| Whatever `codex login` left on disk   |
+| `mock`         | `ar-mock-cli`                 | None — used only by the BDD harness   |
+
+The exec parameters can be overridden via `llm.cli.{bin,args,model_flag,
+timeout_seconds,pass_env}`; an empty value falls back to the per-provider
+default. `api_key_env` names the env var that gets passed through to the
+subprocess — `claude`/`codex` read it themselves.
 
 ## The "burn the code" exercise
 

@@ -10,7 +10,8 @@ GO := $(shell which go 2>/dev/null \
 SRC_DIR    := src
 BIN_DIR    := bin
 CLI_BIN    := $(BIN_DIR)/accurate-reviewer
-MOCK_BIN   := $(BIN_DIR)/mock-llm
+# The mock LLM is a Python script that the BDD harness drops into a
+# per-scenario tempdir's PATH — there is no separate Go binary to build.
 
 .PHONY: help setup setup-python build clean \
         test-cli test-secrets test-sanitizer test-diff test-analyzer \
@@ -47,9 +48,8 @@ setup: setup-python
 	@mkdir -p $(BIN_DIR)
 
 build: setup
-	@echo "Building Go binaries..."
-	cd $(SRC_DIR) && $(GO) build -o ../$(CLI_BIN)  ./cmd/accurate-reviewer/
-	cd $(SRC_DIR) && $(GO) build -o ../$(MOCK_BIN) ./cmd/mock-llm/
+	@echo "Building Go binary..."
+	cd $(SRC_DIR) && $(GO) build -o ../$(CLI_BIN) ./cmd/accurate-reviewer/
 	@echo "Build complete."
 
 # Per-feature targets. Each maps to a Gherkin tag.

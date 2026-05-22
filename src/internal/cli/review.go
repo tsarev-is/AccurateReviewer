@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -130,16 +131,18 @@ func loadDiff(path, from, to string) ([]byte, error) {
 }
 
 func selectProvider(cfg *config.Config) llm.Provider {
-	switch cfg.LLM.Provider {
-	case "mock":
-		return llm.NewMockProvider()
-	case "anthropic":
-		return &llm.AnthropicProvider{
-			APIKey: os.Getenv(cfg.LLM.APIKeyEnv),
-			Model:  cfg.LLM.Worker.Model,
-		}
+	passEnv := append([]string{}, cfg.LLM.CLI.PassEnv...)
+	if cfg.LLM.APIKeyEnv != "" {
+		passEnv = append(passEnv, cfg.LLM.APIKeyEnv)
 	}
-	return llm.NewMockProvider()
+	return &llm.CLIProvider{
+		Name_:     cfg.LLM.Provider,
+		Bin:       cfg.LLM.CLI.Bin,
+		Args:      cfg.LLM.CLI.Args,
+		ModelFlag: cfg.LLM.CLI.ModelFlag,
+		Timeout:   time.Duration(cfg.LLM.CLI.TimeoutSeconds) * time.Second,
+		PassEnv:   passEnv,
+	}
 }
 
 // scanDiffForSecrets feeds added lines from the raw diff into the secrets

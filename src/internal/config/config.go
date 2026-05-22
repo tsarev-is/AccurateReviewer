@@ -14,13 +14,13 @@ import (
 const SupportedVersion = 1
 
 type Config struct {
-	Version   int         `yaml:"version" json:"version"`
-	Checks    Checks      `yaml:"checks" json:"checks"`
-	Severity  Severity    `yaml:"severity" json:"severity"`
-	Exclude   []string    `yaml:"exclude" json:"exclude"`
-	Budget    Budget      `yaml:"budget" json:"budget"`
-	LLM       LLM         `yaml:"llm" json:"llm"`
-	Secrets   Secrets     `yaml:"secrets" json:"secrets"`
+	Version   int          `yaml:"version" json:"version"`
+	Checks    Checks       `yaml:"checks" json:"checks"`
+	Severity  Severity     `yaml:"severity" json:"severity"`
+	Exclude   []string     `yaml:"exclude" json:"exclude"`
+	Budget    Budget       `yaml:"budget" json:"budget"`
+	LLM       LLM          `yaml:"llm" json:"llm"`
+	Secrets   Secrets      `yaml:"secrets" json:"secrets"`
 	Sanitizer SanitizerCfg `yaml:"sanitizer" json:"sanitizer"`
 
 	Warnings []string `yaml:"-" json:"-"`
@@ -33,8 +33,8 @@ type Checks struct {
 }
 
 type Severity struct {
-	Blocking       string `yaml:"blocking" json:"blocking"`
-	ReportMinimum  string `yaml:"report_minimum" json:"report_minimum"`
+	Blocking      string `yaml:"blocking" json:"blocking"`
+	ReportMinimum string `yaml:"report_minimum" json:"report_minimum"`
 }
 
 type Budget struct {
@@ -42,16 +42,36 @@ type Budget struct {
 	MaxUSD    float64 `yaml:"max_usd" json:"max_usd"`
 }
 
+// LLM holds the chosen provider, the per-role model overrides, and the CLI
+// invocation parameters that the exec-provider needs. We deliberately
+// removed the in-process HTTP mock: in MVP the only way the tool talks to a
+// model is by spawning a CLI subprocess (`claude`, `codex`, or a test fake).
 type LLM struct {
-	Provider   string    `yaml:"provider" json:"provider"`
-	Master     ModelSpec `yaml:"master" json:"master"`
-	Worker     ModelSpec `yaml:"worker" json:"worker"`
-	APIKeyEnv  string    `yaml:"api_key_env" json:"api_key_env"`
+	Provider  string    `yaml:"provider" json:"provider"`
+	Master    ModelSpec `yaml:"master" json:"master"`
+	Worker    ModelSpec `yaml:"worker" json:"worker"`
+	APIKeyEnv string    `yaml:"api_key_env" json:"api_key_env"`
+	CLI       CLISpec   `yaml:"cli" json:"cli"`
 }
 
 type ModelSpec struct {
 	Model           string `yaml:"model" json:"model"`
 	MaxOutputTokens int    `yaml:"max_output_tokens" json:"max_output_tokens"`
+}
+
+// CLISpec configures how the exec-provider spawns the LLM CLI. All fields
+// are optional; defaults are filled in from the provider name in
+// applyCLIDefaults. The defaults match the upstream CLI conventions:
+//
+//	claude  -> claude -p   (prompt comes on stdin)
+//	codex   -> codex exec  (prompt comes on stdin)
+//	mock    -> ar-mock-cli (a test fake the BDD harness puts on PATH)
+type CLISpec struct {
+	Bin            string   `yaml:"bin" json:"bin"`
+	Args           []string `yaml:"args" json:"args"`
+	ModelFlag      string   `yaml:"model_flag" json:"model_flag"`
+	TimeoutSeconds int      `yaml:"timeout_seconds" json:"timeout_seconds"`
+	PassEnv        []string `yaml:"pass_env" json:"pass_env"`
 }
 
 type Secrets struct {
@@ -66,6 +86,10 @@ type SanitizerCfg struct {
 
 var validSeverities = map[string]bool{
 	"critical": true, "high": true, "medium": true, "low": true, "info": true,
+}
+
+var validProviders = map[string]bool{
+	"claude": true, "codex": true, "mock": true,
 }
 
 // Load reads + validates a config file. Unknown top-level keys are recorded
@@ -116,6 +140,9 @@ func Parse(r io.Reader) (*Config, error) {
 	if cfg.LLM.Provider == "" {
 		return nil, fmt.Errorf("llm: required")
 	}
+	if !validProviders[cfg.LLM.Provider] {
+		return nil, fmt.Errorf("llm.provider: '%s' is not one of [claude, codex, mock]", cfg.LLM.Provider)
+	}
 	if cfg.Severity.Blocking != "" && !validSeverities[cfg.Severity.Blocking] {
 		return nil, fmt.Errorf("severity.blocking: '%s' is not one of [critical, high, medium, low, info]", cfg.Severity.Blocking)
 	}
@@ -133,5 +160,41 @@ func Parse(r io.Reader) (*Config, error) {
 	if cfg.Severity.Blocking == "" {
 		cfg.Severity.Blocking = "critical"
 	}
+	applyCLIDefaults(&cfg.LLM)
 	return &cfg, nil
+}
+
+// applyCLIDefaults fills in provider-specific CLI defaults so a minimal
+// config like `llm: { provider: claude }` still produces a working
+// invocation. Explicit values in `llm.cli.*` always win.
+func applyCLIDefaults(l *LLM) {
+	switch l.Provider {
+	case "claude":
+		if l.CLI.Bin == "" {
+			l.CLI.Bin = "claude"
+		}
+		if len(l.CLI.Args) == 0 {
+			l.CLI.Args = []string{"-p"}
+		}
+		if l.CLI.ModelFlag == "" {
+			l.CLI.ModelFlag = "--model"
+		}
+	case "codex":
+		if l.CLI.Bin == "" {
+			l.CLI.Bin = "codex"
+		}
+		if len(l.CLI.Args) == 0 {
+			l.CLI.Args = []string{"exec"}
+		}
+		// codex exec takes --model but we leave it unset by default so the
+		// codex CLI picks up its own configured default.
+	case "mock":
+		if l.CLI.Bin == "" {
+			l.CLI.Bin = "ar-mock-cli"
+		}
+		// No args / model flag by default — the fake is dumb on purpose.
+	}
+	if l.CLI.TimeoutSeconds == 0 {
+		l.CLI.TimeoutSeconds = 30
+	}
 }

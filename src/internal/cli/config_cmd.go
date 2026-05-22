@@ -38,14 +38,14 @@ func newConfigCmd() *cobra.Command {
 // but a placeholder api_key field is added so users see "<redacted>" rather
 // than the env value.
 type redacted struct {
-	Version   int                  `yaml:"version"`
-	Checks    config.Checks        `yaml:"checks"`
-	Severity  config.Severity      `yaml:"severity"`
-	Exclude   []string             `yaml:"exclude"`
-	Budget    config.Budget        `yaml:"budget"`
-	LLM       redactedLLM          `yaml:"llm"`
-	Secrets   config.Secrets       `yaml:"secrets"`
-	Sanitizer config.SanitizerCfg  `yaml:"sanitizer"`
+	Version   int                 `yaml:"version"`
+	Checks    config.Checks       `yaml:"checks"`
+	Severity  config.Severity     `yaml:"severity"`
+	Exclude   []string            `yaml:"exclude"`
+	Budget    config.Budget       `yaml:"budget"`
+	LLM       redactedLLM         `yaml:"llm"`
+	Secrets   config.Secrets      `yaml:"secrets"`
+	Sanitizer config.SanitizerCfg `yaml:"sanitizer"`
 }
 
 type redactedLLM struct {
@@ -54,6 +54,7 @@ type redactedLLM struct {
 	Worker    config.ModelSpec `yaml:"worker"`
 	APIKeyEnv string           `yaml:"api_key_env"`
 	APIKey    string           `yaml:"api_key"`
+	CLI       config.CLISpec   `yaml:"cli"`
 }
 
 func redactedView(c *config.Config) redacted {
@@ -69,6 +70,7 @@ func redactedView(c *config.Config) redacted {
 			Worker:    c.LLM.Worker,
 			APIKeyEnv: c.LLM.APIKeyEnv,
 			APIKey:    "REDACTED",
+			CLI:       c.LLM.CLI,
 		},
 		Secrets:   c.Secrets,
 		Sanitizer: c.Sanitizer,

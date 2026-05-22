@@ -29,18 +29,31 @@ budget:
   max_tokens: 200000
   max_usd: 1.00
 
-# LLM provider configuration. In MVP only one provider is wired; the manager
-# is structured so additional providers can be added in v1.0+.
+# LLM provider configuration. The tool only talks to models via a local CLI
+# subprocess — we deliberately do not embed an HTTP client for any vendor.
+# Pick the provider that matches the CLI you already have authenticated:
+#   claude  -> Anthropic's Claude Code CLI (`claude -p` with prompt on stdin)
+#   codex   -> OpenAI's Codex CLI         (`codex exec` with prompt on stdin)
+#   mock    -> `ar-mock-cli` (used by the BDD suite; not for production)
 llm:
-  provider: mock        # mock | anthropic
+  provider: claude
   master:
     model: claude-opus-4-7
     max_output_tokens: 4096
   worker:
     model: claude-sonnet-4-6
     max_output_tokens: 2048
-  # API key is read from env, never from this file.
+  # API key is read from env by the CLI itself, never from this file. Named
+  # here only so the subprocess inherits it.
   api_key_env: ANTHROPIC_API_KEY
+  # Override how the subprocess is spawned. Empty values use the per-provider
+  # defaults — leave as-is for a stock `claude` / `codex` install.
+  cli:
+    bin: ""
+    args: []
+    model_flag: ""
+    timeout_seconds: 30
+    pass_env: []
 
 # Secrets scanner runs pre-flight (deterministic, no LLM). The patterns below
 # are bundled with the binary; this section only toggles them.
