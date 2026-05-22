@@ -1,0 +1,7 @@
+bin/
+.venv/
+.review-cache/
+*.log
+.idea/
+__pycache__/
+*.pyc

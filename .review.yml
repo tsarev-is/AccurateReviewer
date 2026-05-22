@@ -1,0 +1,54 @@
+# AccurateReviewer configuration — single source of truth for the tool's behavior in this repo.
+# All fields shown here are the defaults that ship with `accurate-reviewer init`.
+
+version: 1
+
+# Which workers run in incremental mode.
+checks:
+  security: true
+  logic: true
+  architecture: false   # off by default until startup analysis has run
+
+# Severity policy. The CLI exits non-zero when a finding's severity is at or
+# above `blocking`. Anything below is reported but does not fail the run.
+severity:
+  blocking: critical    # critical | high | medium | low | info
+  report_minimum: low
+
+# Paths excluded from review (vendor, generated code, migrations).
+exclude:
+  - "vendor/**"
+  - "node_modules/**"
+  - "**/*.generated.*"
+  - "**/migrations/**"
+  - ".review-cache/**"
+
+# Token / cost budget for one review run. The master agent falls back to
+# the cheap model or aborts with a warning when the budget is exhausted.
+budget:
+  max_tokens: 200000
+  max_usd: 1.00
+
+# LLM provider configuration. In MVP only one provider is wired; the manager
+# is structured so additional providers can be added in v1.0+.
+llm:
+  provider: mock        # mock | anthropic
+  master:
+    model: claude-opus-4-7
+    max_output_tokens: 4096
+  worker:
+    model: claude-sonnet-4-6
+    max_output_tokens: 2048
+  # API key is read from env, never from this file.
+  api_key_env: ANTHROPIC_API_KEY
+
+# Secrets scanner runs pre-flight (deterministic, no LLM). The patterns below
+# are bundled with the binary; this section only toggles them.
+secrets:
+  enabled: true
+  entropy_threshold: 4.5    # bits per char for the generic high-entropy rule
+
+# Prompt-injection sanitizer wraps every code chunk before it reaches the LLM.
+sanitizer:
+  enabled: true
+  delimiter: "===CODE-UNDER-REVIEW==="
