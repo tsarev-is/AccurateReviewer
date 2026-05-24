@@ -30,25 +30,35 @@ func newReviewCmd() *cobra.Command {
 		Use:   "review",
 		Short: "Run incremental review on a diff",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			progress := cmd.ErrOrStderr()
+			logf := func(format string, args ...any) {
+				fmt.Fprintf(progress, "[review] "+format+"\n", args...)
+			}
+
 			// Diff-source resolution comes first: "no diff source" is a misuse
 			// error that should win over a missing/invalid .review.yml so the
 			// developer fixes the obvious mistake before the subtler one.
+			logf("loading diff")
 			diffData, err := loadDiff(diffPath, fromRef, toRef)
 			if err != nil {
 				return err
 			}
+			logf("diff loaded: %d byte(s)", len(diffData))
 
 			cfg, err := config.Load(".review.yml")
 			if err != nil {
 				return Exit(2, "%v", err)
 			}
+			logf("config loaded: provider=%s blocking=%s", cfg.LLM.Provider, cfg.Severity.Blocking)
 
 			// Pre-flight secrets scan over the raw diff content. Excludes do not apply.
+			logf("pre-flight secrets scan")
 			preFindings, err := scanDiffForSecrets(bytes.NewReader(diffData), cfg.Secrets.EntropyThreshold)
 			if err != nil {
 				return Exit(1, "secrets pre-flight: %v", err)
 			}
 			if len(preFindings) > 0 && cfg.Secrets.Enabled {
+				logf("secrets scan: %d finding(s) — aborting", len(preFindings))
 				for _, f := range preFindings {
 					fmt.Fprintf(cmd.OutOrStdout(), "  [%s] %s:%d rule=%s match=%s\n",
 						f.Severity, f.File, f.Line, f.Rule, f.Match)
@@ -56,16 +66,23 @@ func newReviewCmd() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "secrets detected — aborting review")
 				return Exit(1, "")
 			}
+			logf("secrets scan: clean")
 
 			units, err := diff.Parse(bytes.NewReader(diffData), cfg.Exclude)
 			if err != nil {
 				return Exit(1, "parse diff: %v", err)
 			}
+			logf("parsed %d review unit(s)", len(units))
 
 			provider := selectProvider(cfg)
 			snap, _ := analyzer.ReadSnapshot(".")
+			if snap == nil {
+				logf("no project snapshot — running without it")
+			} else {
+				logf("project snapshot: language=%s", snap.Language.Primary)
+			}
 
-			m := &master.Master{Cfg: cfg, Provider: provider, Snapshot: snap}
+			m := &master.Master{Cfg: cfg, Provider: provider, Snapshot: snap, Progress: progress}
 			rep, err := m.Review(context.Background(), units)
 			if err != nil {
 				return Exit(1, "review: %v", err)

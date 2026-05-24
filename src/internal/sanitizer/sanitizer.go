@@ -13,6 +13,14 @@ import (
 const (
 	StartDelimiter = "===CODE-UNDER-REVIEW==="
 	EndDelimiter   = "===END-CODE-UNDER-REVIEW==="
+
+	// Any untrusted text that gets interpolated into a worker prompt next
+	// to the code under review (e.g. analyzer-produced project context)
+	// must also be wrapped, otherwise an attacker who controls that text
+	// — via a crafted package name, README, or framework manifest the
+	// analyzer ingests — can prompt-inject the LLM. CWE-74.
+	StartProjectDelimiter = "===PROJECT-CONTEXT==="
+	EndProjectDelimiter   = "===END-PROJECT-CONTEXT==="
 )
 
 type rule struct {
@@ -29,6 +37,7 @@ var rules = []rule{
 	{"system-impersonation", regexp.MustCompile(`(?im)^\s*(?:#|//|/\*)?\s*SYSTEM\s*:`)},
 	{"tool-call-forgery", regexp.MustCompile(`</?tool_use>`)},
 	{"end-delimiter-fake", regexp.MustCompile(regexp.QuoteMeta(EndDelimiter))},
+	{"end-project-delimiter-fake", regexp.MustCompile(regexp.QuoteMeta(EndProjectDelimiter))},
 }
 
 type Options struct {
@@ -37,10 +46,22 @@ type Options struct {
 
 func Default() Options { return Options{NeutraliseEnabled: true} }
 
-// Sanitize wraps the snippet in boundary delimiters and replaces matches of
-// the injection patterns with a [neutralised:<rule>] marker, preserving line
-// numbers so report locations stay valid.
+// Sanitize wraps the snippet in CODE-UNDER-REVIEW boundary delimiters and
+// replaces matches of the injection patterns with a [neutralised:<rule>]
+// marker, preserving line numbers so report locations stay valid.
 func Sanitize(snippet string, opts Options) string {
+	return wrap(snippet, StartDelimiter, EndDelimiter, opts)
+}
+
+// SanitizeProject wraps untrusted project context (language, frameworks,
+// manifest paths the analyzer produced from filesystem data) in a separate
+// PROJECT-CONTEXT boundary so the LLM treats it as data rather than as part
+// of its own instructions. Same neutralisation rules apply.
+func SanitizeProject(snippet string, opts Options) string {
+	return wrap(snippet, StartProjectDelimiter, EndProjectDelimiter, opts)
+}
+
+func wrap(snippet, startDelim, endDelim string, opts Options) string {
 	body := snippet
 	if opts.NeutraliseEnabled {
 		for _, rl := range rules {
@@ -48,13 +69,13 @@ func Sanitize(snippet string, opts Options) string {
 		}
 	}
 	var b strings.Builder
-	b.WriteString(StartDelimiter)
+	b.WriteString(startDelim)
 	b.WriteByte('\n')
 	b.WriteString(body)
 	if !strings.HasSuffix(body, "\n") {
 		b.WriteByte('\n')
 	}
-	b.WriteString(EndDelimiter)
+	b.WriteString(endDelim)
 	b.WriteByte('\n')
 	return b.String()
 }

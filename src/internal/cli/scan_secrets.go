@@ -17,8 +17,14 @@ func newScanSecretsCmd() *cobra.Command {
 		Short: "Deterministic pre-flight secrets scan (no LLM)",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			logf := func(format string, args ...any) {
+				fmt.Fprintf(cmd.ErrOrStderr(), "[scan-secrets] "+format+"\n", args...)
+			}
+
+			logf("scanning %d file(s)", len(args))
 			var all []secrets.Finding
-			for _, path := range args {
+			for i, path := range args {
+				logf("(%d/%d) %s", i+1, len(args), path)
 				f, err := os.Open(path)
 				if err != nil {
 					return Exit(1, "open %s: %v", path, err)
@@ -30,6 +36,7 @@ func newScanSecretsCmd() *cobra.Command {
 				}
 				all = append(all, findings...)
 			}
+			logf("done: %d finding(s)", len(all))
 
 			out := cmd.OutOrStdout()
 			if jsonOut {

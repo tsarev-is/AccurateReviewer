@@ -33,7 +33,7 @@ def _load_script(path: str) -> dict:
     return {entry["worker"]: entry for entry in data}
 
 
-def _append_prompt(path: str, prompt: str) -> None:
+def _append_prompt(path: str, prompt: str, argv: list) -> None:
     if not path:
         return
     entry = {
@@ -41,6 +41,17 @@ def _append_prompt(path: str, prompt: str) -> None:
         "worker": os.environ.get("ACCURATE_REVIEWER_WORKER", ""),
         "model": os.environ.get("ACCURATE_REVIEWER_MODEL", ""),
         "prompt": prompt,
+        # argv[0] is the basename we were invoked as (`claude`, `codex`,
+        # or `ar-mock-cli`); steps assert on it to prove the right
+        # provider default was picked. argv[1:] captures `-p`, `--model`,
+        # `exec`, etc. — everything the Go provider added to the call.
+        "argv0": os.path.basename(argv[0]) if argv else "",
+        "argv": argv[1:] if len(argv) > 1 else [],
+        # Capture the full child environment so pass_env / env-isolation
+        # scenarios can assert on what the Go provider actually forwarded.
+        # PATH/HOME are filtered out — they are always present and just add
+        # noise to log inspections.
+        "env": {k: v for k, v in os.environ.items() if k not in ("PATH", "HOME")},
     }
     with open(path, "a") as fh:
         fh.write(json.dumps(entry) + "\n")
@@ -51,7 +62,11 @@ def main() -> int:
     worker = os.environ.get("ACCURATE_REVIEWER_WORKER", "")
 
     script = _load_script(os.environ.get("ACCURATE_REVIEWER_MOCK_SCRIPT", ""))
-    _append_prompt(os.environ.get("ACCURATE_REVIEWER_MOCK_PROMPT_LOG", ""), prompt)
+    _append_prompt(
+        os.environ.get("ACCURATE_REVIEWER_MOCK_PROMPT_LOG", ""),
+        prompt,
+        sys.argv,
+    )
 
     entry = script.get(worker, {"text": "[]"})
     if entry.get("delay_ms"):

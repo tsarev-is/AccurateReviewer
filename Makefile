@@ -15,7 +15,7 @@ CLI_BIN    := $(BIN_DIR)/accurate-reviewer
 
 .PHONY: help setup setup-python build clean \
         test-cli test-secrets test-sanitizer test-diff test-analyzer \
-        test-review test-config test-all
+        test-review test-config test-llm test-all
 
 help:
 	@echo "Usage: make [target]"
@@ -30,6 +30,7 @@ help:
 	@echo "  test-analyzer    Project startup analysis"
 	@echo "  test-review      Master + worker review (mock LLM)"
 	@echo "  test-config      .review.yml parsing & validation"
+	@echo "  test-llm         CLI LLM provider & per-role model selection"
 	@echo "  test-all         Run the full BDD suite"
 	@echo ""
 	@echo "  clean         Remove compiled binaries"
@@ -74,6 +75,9 @@ test-review:    build
 
 test-config:    build
 	@bash -c "source .venv/bin/activate && behave bdd/ --tags=@config"
+
+test-llm:       build
+	@bash -c "source .venv/bin/activate && behave bdd/ --tags=@llm"
 
 test-all:       build
 	@bash -c "source .venv/bin/activate && behave bdd/"

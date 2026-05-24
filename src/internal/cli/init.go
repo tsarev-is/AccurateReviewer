@@ -51,7 +51,7 @@ llm:
     bin: ""
     args: []
     model_flag: ""
-    timeout_seconds: 30
+    timeout_seconds: 300
     pass_env: []
 
 secrets:

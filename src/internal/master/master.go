@@ -6,9 +6,12 @@ package master
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/scaratec/accurate-reviewer/internal/analyzer"
 	"github.com/scaratec/accurate-reviewer/internal/config"
@@ -18,17 +21,28 @@ import (
 )
 
 type Report struct {
-	Findings        []worker.Finding
-	UsedTokens      int
-	WorkersCalled   []string
-	WorkerErrors    []error
-	BudgetExceeded  bool
+	Findings       []worker.Finding
+	UsedTokens     int
+	WorkersCalled  []string
+	WorkerErrors   []error
+	BudgetExceeded bool
 }
 
 type Master struct {
 	Cfg      *config.Config
 	Provider llm.Provider
 	Snapshot *analyzer.Snapshot
+	// Progress, if non-nil, receives one-line human-readable status updates
+	// as units and workers start/finish. Intended for stderr so the user can
+	// watch the review unfold; stdout is reserved for the structured report.
+	Progress io.Writer
+}
+
+func (m *Master) logf(format string, args ...any) {
+	if m.Progress == nil {
+		return
+	}
+	fmt.Fprintf(m.Progress, "[review] "+format+"\n", args...)
 }
 
 // Review runs every enabled worker against every unit. Findings produced by
@@ -37,18 +51,25 @@ type Master struct {
 func (m *Master) Review(ctx context.Context, units []diff.Unit) (*Report, error) {
 	workers := m.enabledWorkers()
 	if len(workers) == 0 {
+		m.logf("no workers enabled — skipping")
 		return &Report{}, nil
 	}
 
 	projectContext := m.projectContext()
+	workerNames := make([]string, 0, len(workers))
+	for _, w := range workers {
+		workerNames = append(workerNames, w.Name)
+	}
+	m.logf("starting: %d unit(s), workers=[%s]", len(units), strings.Join(workerNames, ","))
 
 	var (
-		mu         sync.Mutex
-		report     = &Report{}
-		calledSet  = map[string]bool{}
+		mu        sync.Mutex
+		report    = &Report{}
+		calledSet = map[string]bool{}
 	)
 
-	for _, u := range units {
+	for idx, u := range units {
+		m.logf("unit %d/%d: %s", idx+1, len(units), u.File)
 		var wg sync.WaitGroup
 		for _, w := range workers {
 			if report.BudgetExceeded {
@@ -57,12 +78,18 @@ func (m *Master) Review(ctx context.Context, units []diff.Unit) (*Report, error)
 			wg.Add(1)
 			go func(w worker.Worker, u diff.Unit) {
 				defer wg.Done()
+				m.logf("  -> %s on %s", w.Name, u.File)
+				start := time.Now()
 				res := w.Run(ctx, m.Provider, m.Cfg.LLM.Worker.Model, u, projectContext)
+				elapsed := time.Since(start).Round(time.Millisecond)
 				mu.Lock()
 				defer mu.Unlock()
 				calledSet[res.Worker] = true
 				if res.Err != nil {
+					m.logf("  !! %s on %s failed in %s: %v", w.Name, u.File, elapsed, res.Err)
 					report.WorkerErrors = append(report.WorkerErrors, errors.New("worker "+res.Worker+" failed: "+res.Err.Error()))
+				} else {
+					m.logf("  <- %s on %s done in %s: %d finding(s), %d token(s)", w.Name, u.File, elapsed, len(res.Findings), res.UsedTokens)
 				}
 				report.Findings = append(report.Findings, res.Findings...)
 				report.UsedTokens += res.UsedTokens
@@ -73,9 +100,11 @@ func (m *Master) Review(ctx context.Context, units []diff.Unit) (*Report, error)
 		}
 		wg.Wait()
 		if report.BudgetExceeded {
+			m.logf("budget exceeded after %d token(s) — stopping further units", report.UsedTokens)
 			break
 		}
 	}
+	m.logf("done: %d raw finding(s), %d token(s) used", len(report.Findings), report.UsedTokens)
 	for k := range calledSet {
 		report.WorkersCalled = append(report.WorkersCalled, k)
 	}
@@ -119,7 +148,10 @@ func dedupe(in []worker.Finding) []worker.Finding {
 	severityRank := map[string]int{
 		"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0,
 	}
-	type key struct{ file, title string; line int }
+	type key struct {
+		file, title string
+		line        int
+	}
 	bucket := map[key]worker.Finding{}
 	order := []key{}
 	for _, f := range in {

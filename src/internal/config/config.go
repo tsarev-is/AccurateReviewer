@@ -193,8 +193,14 @@ func applyCLIDefaults(l *LLM) {
 			l.CLI.Bin = "ar-mock-cli"
 		}
 		// No args / model flag by default — the fake is dumb on purpose.
+		if l.CLI.TimeoutSeconds == 0 {
+			l.CLI.TimeoutSeconds = 30
+		}
 	}
 	if l.CLI.TimeoutSeconds == 0 {
-		l.CLI.TimeoutSeconds = 30
+		// 5 minutes covers a slow opus-class review prompt with margin. Real
+		// `claude`/`codex` calls routinely take 60–120 s; 30 s — our previous
+		// default — was killing real workers mid-answer.
+		l.CLI.TimeoutSeconds = 300
 	}
 }
