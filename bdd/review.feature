@@ -128,6 +128,62 @@ Feature: Master + worker review
     And stderr contains "worker security failed: rate_limit"
     And the output still contains "Unused variable"
 
+  Scenario: --output writes the report to a file instead of stdout
+    # By default the report goes to stdout. Passing --output (or -o) redirects
+    # the entire report — the "Reviewed:" header, every finding, and the
+    # trailing "N findings" line — to the named file. Stdout keeps a single
+    # confirmation line so the developer (or a CI step) can still see that
+    # something happened. Stderr (progress) is unaffected.
+    Given the mock LLM is scripted with:
+      | worker   | findings |
+      | security | []       |
+      | logic    | []       |
+    And a diff that adds a file "hello.go" with content:
+      """
+      package main
+      func Greet() string { return "hello" }
+      """
+    When I run "accurate-reviewer review --diff - --output report.txt" with that diff on stdin
+    Then the exit code is 0
+    And a file "report.txt" exists in the working directory
+    And the file "report.txt" contains "0 findings"
+    And the output contains "report written to report.txt"
+    And the output does NOT contain "0 findings"
+
+  Scenario: --output captures findings (not just the summary) into the file
+    Given the mock LLM is scripted with:
+      | worker   | findings_json |
+      | security | [{"file":"db.go","line":12,"severity":"critical","cwe":"CWE-89","title":"SQL injection via string concatenation","why":"User input is concatenated into the SQL query without parameterisation."}] |
+      | logic    | [] |
+    And a diff that adds a file "db.go" with content:
+      """
+      package db
+      func Find(id string) string {
+          q := "SELECT * FROM users WHERE id = '" + id + "'"
+          return q
+      }
+      """
+    When I run "accurate-reviewer review --diff - --output findings.txt" with that diff on stdin
+    Then the exit code is 1
+    And the file "findings.txt" contains "SQL injection via string concatenation"
+    And the file "findings.txt" contains "[critical]"
+    And the file "findings.txt" contains "cwe=CWE-89"
+    And the output contains "report written to findings.txt"
+
+  Scenario: Without --output, the report still goes to stdout
+    Given the mock LLM is scripted with:
+      | worker   | findings |
+      | security | []       |
+      | logic    | []       |
+    And a diff that adds a file "x.go" with content:
+      """
+      package main
+      """
+    When I run "accurate-reviewer review --diff -" with that diff on stdin
+    Then the exit code is 0
+    And the output contains "0 findings"
+    And the output does NOT contain "report written to"
+
   Scenario: The token budget caps the review and the master reports the overage
     # Workers run in parallel per unit, so the budget is checked between
     # units, not within a single parallel batch. With two enabled workers

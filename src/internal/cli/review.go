@@ -22,9 +22,10 @@ import (
 
 func newReviewCmd() *cobra.Command {
 	var (
-		diffPath string
-		fromRef  string
-		toRef    string
+		diffPath   string
+		fromRef    string
+		toRef      string
+		outputPath string
 	)
 	cmd := &cobra.Command{
 		Use:   "review",
@@ -51,6 +52,20 @@ func newReviewCmd() *cobra.Command {
 			}
 			logf("config loaded: provider=%s blocking=%s", cfg.LLM.Provider, cfg.Severity.Blocking)
 
+			// Report sink: stdout by default, file when --output is given.
+			// Progress (stderr) and the "report written to ..." confirmation
+			// (stdout) stay separate so callers can still see that the run
+			// finished even when the body is redirected to a file.
+			reportOut := cmd.OutOrStdout()
+			if outputPath != "" {
+				f, err := os.Create(outputPath)
+				if err != nil {
+					return Exit(1, "open output: %v", err)
+				}
+				defer f.Close()
+				reportOut = f
+			}
+
 			// Pre-flight secrets scan over the raw diff content. Excludes do not apply.
 			logf("pre-flight secrets scan")
 			preFindings, err := scanDiffForSecrets(bytes.NewReader(diffData), cfg.Secrets.EntropyThreshold)
@@ -60,10 +75,13 @@ func newReviewCmd() *cobra.Command {
 			if len(preFindings) > 0 && cfg.Secrets.Enabled {
 				logf("secrets scan: %d finding(s) — aborting", len(preFindings))
 				for _, f := range preFindings {
-					fmt.Fprintf(cmd.OutOrStdout(), "  [%s] %s:%d rule=%s match=%s\n",
+					fmt.Fprintf(reportOut, "  [%s] %s:%d rule=%s match=%s\n",
 						f.Severity, f.File, f.Line, f.Rule, f.Match)
 				}
-				fmt.Fprintln(cmd.OutOrStdout(), "secrets detected — aborting review")
+				fmt.Fprintln(reportOut, "secrets detected — aborting review")
+				if outputPath != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "report written to %s\n", outputPath)
+				}
 				return Exit(1, "")
 			}
 			logf("secrets scan: clean")
@@ -92,14 +110,20 @@ func newReviewCmd() *cobra.Command {
 			for _, u := range units {
 				reviewed = append(reviewed, u.File)
 			}
-			blocked := report.Console(cmd.OutOrStdout(), rep.Findings, cfg.Severity.Blocking, reviewed)
+			blocked := report.Console(reportOut, rep.Findings, cfg.Severity.Blocking, reviewed)
 
 			for _, e := range rep.WorkerErrors {
 				fmt.Fprintln(cmd.ErrOrStderr(), e)
 			}
 			if rep.BudgetExceeded {
-				fmt.Fprintln(cmd.OutOrStdout(), "budget exceeded")
+				fmt.Fprintln(reportOut, "budget exceeded")
+				if outputPath != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "report written to %s\n", outputPath)
+				}
 				return Exit(2, "")
+			}
+			if outputPath != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "report written to %s\n", outputPath)
 			}
 			if len(rep.WorkerErrors) > 0 {
 				return Exit(2, "")
@@ -113,6 +137,7 @@ func newReviewCmd() *cobra.Command {
 	cmd.Flags().StringVar(&diffPath, "diff", "", "diff source (path or '-' for stdin)")
 	cmd.Flags().StringVar(&fromRef, "from", "", "git ref to diff from")
 	cmd.Flags().StringVar(&toRef, "to", "", "git ref to diff to")
+	cmd.Flags().StringVarP(&outputPath, "output", "o", "", "write the report to this file instead of stdout")
 	return cmd
 }
 
