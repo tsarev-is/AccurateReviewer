@@ -23,8 +23,28 @@ type Config struct {
 	Secrets      Secrets      `yaml:"secrets" json:"secrets"`
 	Sanitizer    SanitizerCfg `yaml:"sanitizer" json:"sanitizer"`
 	Integrations Integrations `yaml:"integrations" json:"integrations"`
+	Cache        Cache        `yaml:"cache" json:"cache"`
 
 	Warnings []string `yaml:"-" json:"-"`
+}
+
+// Cache controls the per-(unit, worker) findings cache. The cache is on
+// by default — disabling it forces every unit through the model on every
+// run, which is what scenarios that script per-call mock responses need
+// for repeatable assertions.
+type Cache struct {
+	Enabled *bool `yaml:"enabled" json:"enabled"`
+}
+
+// CacheEnabled returns the effective cache toggle: present-and-true,
+// absent (defaults to true), or present-and-false. Wrapping the YAML field
+// in *bool lets us distinguish "unset" from "explicit false" without
+// breaking back-compat configs that never knew about this section.
+func (c Cache) IsEnabled() bool {
+	if c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
 }
 
 // Integrations declares the subprocess commands that fetch task/issue
@@ -134,7 +154,7 @@ func Parse(r io.Reader) (*Config, error) {
 	known := map[string]bool{
 		"version": true, "checks": true, "severity": true, "exclude": true,
 		"budget": true, "llm": true, "secrets": true, "sanitizer": true,
-		"integrations": true,
+		"integrations": true, "cache": true,
 	}
 	var warnings []string
 	for k := range generic {

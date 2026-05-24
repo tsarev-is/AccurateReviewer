@@ -7,12 +7,9 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/scaratec/accurate-reviewer/internal/severity"
 	"github.com/scaratec/accurate-reviewer/internal/worker"
 )
-
-var severityRank = map[string]int{
-	"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0,
-}
 
 // Console writes a grouped, colourless plain-text report. Returns true iff
 // any finding meets the blocking severity. The `reviewedFiles` line lets
@@ -23,9 +20,8 @@ func Console(out io.Writer, findings []worker.Finding, blocking string, reviewed
 		fmt.Fprintf(out, "Reviewed: %s\n", strings.Join(reviewedFiles, ", "))
 	}
 	blocked := false
-	threshold := severityRank[blocking]
 	for _, f := range findings {
-		if severityRank[f.Severity] >= threshold {
+		if severity.AtLeast(f.Severity, blocking) {
 			blocked = true
 		}
 		fmt.Fprintf(out, "  [%s] %s:%d %s\n", f.Severity, sanitiseForTerminal(f.File), f.Line, sanitiseForTerminal(f.Title))

@@ -87,6 +87,19 @@ def before_scenario(context, scenario):
 
 
 def after_scenario(context, scenario):
+    # Any backgrounded `serve` processes must die before we wipe the
+    # workdir, otherwise the child keeps a handle on a vanished file
+    # and may emit confusing errors on shutdown. The hook lives in
+    # html_steps.py so the cleanup logic stays next to the step that
+    # spawned the process. Only ImportError is swallowed here — the
+    # cleanup itself runs unguarded so real bugs surface instead of
+    # being silently dropped.
+    try:
+        from steps.html_steps import after_scenario_hook
+    except ImportError:
+        after_scenario_hook = None
+    if after_scenario_hook is not None:
+        after_scenario_hook(context, scenario)
     if getattr(context, "workdir", None) and context.workdir.exists():
         shutil.rmtree(context.workdir, ignore_errors=True)
 

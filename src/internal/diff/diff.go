@@ -35,6 +35,128 @@ type Unit struct {
 	Hunks        []Hunk `json:"hunks"`
 }
 
+// Suppressions returns a map from added-line number to the reason text
+// supplied after an inline `noqa-review:` marker on that same line. The
+// recognised comment prefixes cover the comment syntax of every language we
+// realistically target — `//`, `#`, `--`, and `/*` — without language
+// detection: matching is purely textual on the added line. Findings whose
+// `(file, line)` matches an entry here are dropped by the master.
+//
+// Only added lines are scanned; pre-existing legacy markers in unchanged
+// context lines must not silence findings on the diff (that would let an
+// attacker mute a security finding by planting a marker nearby in an
+// untouched line).
+func (u Unit) Suppressions() map[int]string {
+	out := map[int]string{}
+	for _, h := range u.Hunks {
+		for i, line := range h.Added {
+			reason, ok := extractSuppression(line)
+			if !ok {
+				continue
+			}
+			ln := h.NewStart
+			if i < len(h.AddedLineNumbers) {
+				ln = h.AddedLineNumbers[i]
+			}
+			out[ln] = reason
+		}
+	}
+	return out
+}
+
+// extractSuppression looks for a `noqa-review:` marker that sits inside a
+// real trailing comment on the line and returns the trimmed reason. We
+// scan left-to-right tracking string-literal state so a `//`, `#`, `--`,
+// or `/*` that appears inside a quoted string cannot satisfy the
+// comment-opener requirement. Without this, an attacker who controls any
+// string literal on the flagged line could plant a fake comment opener
+// and mute a security finding — see the BDD scenario
+// "noqa-review inside a string literal is NOT honored".
+func extractSuppression(line string) (string, bool) {
+	const marker = "noqa-review:"
+	commentStart, blockComment := findCommentStart(line)
+	if commentStart < 0 {
+		return "", false
+	}
+	// The marker must live inside the comment region, not before it.
+	rest := line[commentStart:]
+	idx := strings.Index(rest, marker)
+	if idx < 0 {
+		return "", false
+	}
+	reason := rest[idx+len(marker):]
+	if blockComment {
+		// /* … */ — drop the closer plus any whitespace on either side
+		// of it. The double TrimSpace handles "reason */ ", "reason*/",
+		// and "reason */" alike.
+		reason = strings.TrimSpace(reason)
+		reason = strings.TrimSuffix(reason, "*/")
+		reason = strings.TrimSpace(reason)
+	}
+	return strings.TrimSpace(reason), true
+}
+
+// findCommentStart returns the byte offset of the first comment opener on
+// the line that is NOT inside a string literal, plus a flag indicating
+// whether the opener is the block-comment `/*` (so the caller can strip
+// the matching `*/`). Recognised string delimiters: `"`, `'`, and “ ` “.
+// Backslash escapes inside `"` and `'` are honored; backticks are raw and
+// have no escape. The scanner is a deliberately small subset — it doesn't
+// need to fully parse any one language, only to avoid mistaking
+// in-string punctuation for code structure.
+func findCommentStart(line string) (int, bool) {
+	const (
+		stateCode = iota
+		stateDouble
+		stateSingle
+		stateBacktick
+	)
+	state := stateCode
+	i := 0
+	for i < len(line) {
+		c := line[i]
+		switch state {
+		case stateCode:
+			switch {
+			case c == '"':
+				state = stateDouble
+				i++
+			case c == '\'':
+				state = stateSingle
+				i++
+			case c == '`':
+				state = stateBacktick
+				i++
+			case c == '/' && i+1 < len(line) && line[i+1] == '/':
+				return i, false
+			case c == '/' && i+1 < len(line) && line[i+1] == '*':
+				return i, true
+			case c == '#':
+				return i, false
+			case c == '-' && i+1 < len(line) && line[i+1] == '-':
+				return i, false
+			default:
+				i++
+			}
+		case stateDouble, stateSingle:
+			if c == '\\' && i+1 < len(line) {
+				i += 2
+				continue
+			}
+			if (state == stateDouble && c == '"') || (state == stateSingle && c == '\'') {
+				state = stateCode
+			}
+			i++
+		case stateBacktick:
+			if c == '`' {
+				state = stateCode
+			}
+			i++
+		}
+	}
+	return -1, false
+}
+
 // Parse parses a unified diff. Excludes is a list of glob patterns; matched
 // files produce no unit. Deletions and binaries also produce no unit.
 func Parse(r io.Reader, excludes []string) ([]Unit, error) {
@@ -42,11 +164,11 @@ func Parse(r io.Reader, excludes []string) ([]Unit, error) {
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 
 	var (
-		units    []Unit
-		cur      *Unit
-		curHunk  *Hunk
-		newLine  int
-		inHunk   bool
+		units   []Unit
+		cur     *Unit
+		curHunk *Hunk
+		newLine int
+		inHunk  bool
 	)
 
 	flushHunk := func() {

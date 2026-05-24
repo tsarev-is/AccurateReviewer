@@ -54,6 +54,8 @@ func NewRoot() *cobra.Command {
 		newParseDiffCmd(),
 		newSanitizeCmd(),
 		newConfigCmd(),
+		newServeCmd(),
+		newPostCommentsCmd(),
 		newVersionCmd(),
 	)
 	return root

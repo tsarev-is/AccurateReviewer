@@ -188,6 +188,7 @@ def step_mock_always_tokens(context, n):
 
 
 @given('a diff that adds a file "{path}" with content')
+@when('a diff that adds a file "{path}" with content')
 def step_diff_adds_file(context, path):
     body = context.text
     lines = body.splitlines()
@@ -253,6 +254,7 @@ use_step_matcher("parse")
 
 
 @when('I run "{cmdline}" with that diff on stdin')
+@given('I run "{cmdline}" with that diff on stdin')
 def step_run_with_diff_stdin(context, cmdline):
     extra_env = getattr(context, "extra_env", None)
     run_cli(context, cmdline, stdin=context.last_diff or b"", extra_env=extra_env)
@@ -317,6 +319,14 @@ def step_output_not_contains(context, needle):
 def step_stderr_contains(context, needle):
     assert needle in context.last_run["stderr"], (
         f'expected stderr to contain {needle!r}\n'
+        f'actual stderr:\n{context.last_run["stderr"]}'
+    )
+
+
+@then('stderr does NOT contain "{needle}"')
+def step_stderr_not_contains(context, needle):
+    assert needle not in context.last_run["stderr"], (
+        f'expected stderr to NOT contain {needle!r}\n'
         f'actual stderr:\n{context.last_run["stderr"]}'
     )
 

@@ -58,6 +58,13 @@ secrets:
   enabled: true
   entropy_threshold: 4.5
 
+cache:
+  # When enabled (default), per-(unit, worker) findings are stored under
+  # .review-cache/findings/. Unchanged hunks are replayed from disk on the
+  # next run with no LLM round-trip. Disable for one-off audits or when you
+  # need to force a re-evaluation (the --no-cache flag does the same per-run).
+  enabled: true
+
 sanitizer:
   enabled: true
   delimiter: "===CODE-UNDER-REVIEW==="

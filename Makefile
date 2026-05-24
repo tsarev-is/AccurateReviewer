@@ -23,7 +23,8 @@ LDFLAGS     := -X 'github.com/scaratec/accurate-reviewer/internal/cli.Version=$(
 
 .PHONY: help setup setup-python build clean \
         test-cli test-secrets test-sanitizer test-diff test-analyzer \
-        test-review test-config test-llm test-all
+        test-review test-config test-llm test-cache test-full test-html \
+        test-action test-all
 
 help:
 	@echo "Usage: make [target]"
@@ -86,6 +87,18 @@ test-config:    build
 
 test-llm:       build
 	@bash -c "source .venv/bin/activate && behave bdd/ --tags=@llm"
+
+test-cache:     build
+	@bash -c "source .venv/bin/activate && behave bdd/ --tags=@cache"
+
+test-full:      build
+	@bash -c "source .venv/bin/activate && behave bdd/ --tags=@full"
+
+test-html:      build
+	@bash -c "source .venv/bin/activate && behave bdd/ --tags=@html"
+
+test-action:    build
+	@bash -c "source .venv/bin/activate && behave bdd/ --tags=@action"
 
 test-all:       build
 	@bash -c "source .venv/bin/activate && behave bdd/"

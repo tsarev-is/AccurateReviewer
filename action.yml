@@ -1,0 +1,83 @@
+name: "AccurateReviewer"
+description: "AI code review — security-first, LLM-based. Runs on PRs and posts inline comments via gh. Requires an actions/checkout step before invocation; when binary-path is empty the runner must also have Go and make available to build from source."
+author: "scaratec"
+branding:
+  icon: "shield"
+  color: "blue"
+
+inputs:
+  pr:
+    description: "Pull request number to comment on. Default: the PR that triggered the workflow."
+    required: false
+    default: "${{ github.event.pull_request.number }}"
+  base-ref:
+    description: "Base ref to diff against. Default: the PR base."
+    required: false
+    default: "${{ github.event.pull_request.base.sha }}"
+  head-ref:
+    description: "Head ref to diff against. Default: the PR head."
+    required: false
+    default: "${{ github.event.pull_request.head.sha }}"
+  min-severity:
+    description: "Skip findings below this severity when posting comments (info|low|medium|high|critical)."
+    required: false
+    default: "medium"
+  config-path:
+    description: "Path to .review.yml relative to the repo root."
+    required: false
+    default: ".review.yml"
+  binary-path:
+    description: "Path to a pre-built accurate-reviewer binary. If empty, the action builds from source."
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Ensure gh is available
+      shell: bash
+      run: |
+        if ! command -v gh >/dev/null 2>&1; then
+          echo "::error::'gh' CLI is required but not installed on the runner."
+          echo "       Add a setup step before this action, e.g. https://github.com/marketplace/actions/setup-gh-cli"
+          exit 1
+        fi
+        gh --version
+
+    - name: Resolve accurate-reviewer binary
+      id: bin
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.binary-path }}" ]; then
+          echo "path=${{ inputs.binary-path }}" >> "$GITHUB_OUTPUT"
+        else
+          # Build from the action's own checkout, not the consumer's repo.
+          # `github.action_path` points at the directory where this
+          # action.yml lives — using `make -C` keeps the build self-contained
+          # regardless of the consumer's cwd.
+          make -C "${{ github.action_path }}" build
+          echo "path=${{ github.action_path }}/bin/accurate-reviewer" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Run review on the PR diff
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        "${{ steps.bin.outputs.path }}" review \
+          --from "${{ inputs.base-ref }}" \
+          --to   "${{ inputs.head-ref }}" \
+          --output findings.json
+      continue-on-error: true  # findings present is exit 1; we still want to post comments
+
+    - name: Post inline PR comments
+      if: hashFiles('findings.json') != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        "${{ steps.bin.outputs.path }}" post-comments \
+          --report findings.json \
+          --pr "${{ inputs.pr }}" \
+          --commit-sha "${{ inputs.head-ref }}" \
+          --min-severity "${{ inputs.min-severity }}"

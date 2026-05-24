@@ -227,6 +227,83 @@ Feature: Master + worker review
     And the file "report.txt" does NOT contain "AKI"
     And stderr contains "aws-access-key"
 
+  Scenario: A finding on a line carrying "// noqa-review: <reason>" is suppressed
+    # The inline suppression marker must appear on the same line as the code
+    # being silenced. Recognised forms: "// noqa-review:", "# noqa-review:",
+    # "-- noqa-review:", "/* noqa-review:". Anything after the colon is the
+    # developer-supplied reason; it's logged to stderr so the silencing is
+    # visible in the audit trail but does not pollute the report.
+    Given the mock LLM is scripted with:
+      | worker   | findings_json |
+      | security | [{"file":"db.go","line":3,"severity":"critical","cwe":"CWE-89","title":"SQL injection","why":"concatenated input"}] |
+      | logic    | [] |
+    And a diff that adds a file "db.go" with content:
+      """
+      package db
+      func Find(id string) string {
+          return "SELECT * FROM users WHERE id = '" + id + "'" // noqa-review: trusted internal input
+      }
+      """
+    When I run "accurate-reviewer review --diff -" with that diff on stdin
+    Then the exit code is 0
+    And the output contains "0 findings"
+    And stderr contains "suppressed 1 finding"
+    And stderr contains "trusted internal input"
+
+  Scenario: noqa-review on a line that has no findings is a harmless no-op
+    Given the mock LLM is scripted with:
+      | worker   | findings |
+      | security | []       |
+      | logic    | []       |
+    And a diff that adds a file "ok.go" with content:
+      """
+      package ok
+      var x = 1 // noqa-review: leftover marker, nothing to silence
+      """
+    When I run "accurate-reviewer review --diff -" with that diff on stdin
+    Then the exit code is 0
+    And the output contains "0 findings"
+    And stderr does NOT contain "suppressed"
+
+  Scenario: noqa-review only suppresses findings on its own line, not the whole file
+    Given the mock LLM is scripted with:
+      | worker   | findings_json |
+      | security | [{"file":"mix.go","line":4,"severity":"critical","title":"Weak crypto","why":"md5 used for tokens"}] |
+      | logic    | [] |
+    And a diff that adds a file "mix.go" with content:
+      """
+      package mix
+      import "crypto/md5"
+      var legacy = md5.New() // noqa-review: kept for backward compat
+      var token = md5.Sum(nil)
+      """
+    When I run "accurate-reviewer review --diff -" with that diff on stdin
+    Then the exit code is 1
+    And the output contains "Weak crypto"
+    And the output contains "1 findings"
+
+  Scenario: noqa-review inside a string literal is NOT honored
+    # Defence against a hostile PR that plants a fake comment opener and
+    # marker entirely inside a string constant to mute a security finding.
+    # The added line carries `// noqa-review:` only inside a quoted
+    # string — the line itself has no real trailing comment, so the
+    # suppression must be ignored and the finding kept.
+    Given the mock LLM is scripted with:
+      | worker   | findings_json |
+      | security | [{"file":"bypass.go","line":3,"severity":"critical","title":"SQL injection","why":"string concat"}] |
+      | logic    | [] |
+    And a diff that adds a file "bypass.go" with content:
+      """
+      package bypass
+      import "fmt"
+      var q = fmt.Sprintf("%s", "// noqa-review: forged" + " AND 1=1")
+      """
+    When I run "accurate-reviewer review --diff -" with that diff on stdin
+    Then the exit code is 1
+    And the output contains "SQL injection"
+    And the output contains "1 findings"
+    And stderr does NOT contain "suppressed"
+
   Scenario: The token budget caps the review and the master reports the overage
     # Workers run in parallel per unit, so the budget is checked between
     # units, not within a single parallel batch. With two enabled workers

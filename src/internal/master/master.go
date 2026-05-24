@@ -14,9 +14,11 @@ import (
 	"time"
 
 	"github.com/scaratec/accurate-reviewer/internal/analyzer"
+	"github.com/scaratec/accurate-reviewer/internal/cache"
 	"github.com/scaratec/accurate-reviewer/internal/config"
 	"github.com/scaratec/accurate-reviewer/internal/diff"
 	"github.com/scaratec/accurate-reviewer/internal/llm"
+	"github.com/scaratec/accurate-reviewer/internal/severity"
 	"github.com/scaratec/accurate-reviewer/internal/worker"
 )
 
@@ -41,6 +43,14 @@ type Master struct {
 	// as units and workers start/finish. Intended for stderr so the user can
 	// watch the review unfold; stdout is reserved for the structured report.
 	Progress io.Writer
+	// ToolVersion participates in the cache key so an upgrade invalidates
+	// every stored finding (different binary, possibly different prompts or
+	// parsing). The caller passes cli.Version here; tests pass a stable
+	// string so cache hits are reproducible.
+	ToolVersion string
+	// CacheRoot is the directory that contains .review-cache/. Empty means
+	// "current working directory" — same convention the analyzer uses.
+	CacheRoot string
 }
 
 func (m *Master) logf(format string, args ...any) {
@@ -73,12 +83,41 @@ func (m *Master) Review(ctx context.Context, units []diff.Unit) (*Report, error)
 		calledSet = map[string]bool{}
 	)
 
+	cacheRoot := m.CacheRoot
+	if cacheRoot == "" {
+		cacheRoot = "."
+	}
+	cacheOn := m.Cfg.Cache.IsEnabled()
+	// Render the project context once so every cache key sees the same
+	// string. Doing it inside the loop would still be correct but would
+	// re-walk Snapshot fields per (unit × worker).
+	projectCtx := m.projectContext()
+
 	for idx, u := range units {
 		m.logf("unit %d/%d: %s", idx+1, len(units), u.File)
 		var wg sync.WaitGroup
 		for _, w := range workers {
 			if report.BudgetExceeded {
 				break
+			}
+			// Cache lookup happens before spawning the goroutine so a hit
+			// short-circuits both the worker AND the LLM subprocess. The
+			// hit counts toward the budget (using the originally-recorded
+			// token cost) so a heavily-cached run still respects max_tokens.
+			if cacheOn {
+				key := cache.Key(u, w, m.ToolVersion, projectCtx)
+				if cached, tokens, ok := cache.Load(cacheRoot, key); ok {
+					m.logf("  -> %s on %s: cache hit (%d finding(s), %d token(s))", w.Name, u.File, len(cached), tokens)
+					mu.Lock()
+					calledSet[w.Name] = true
+					report.Findings = append(report.Findings, cached...)
+					report.UsedTokens += tokens
+					if m.Cfg.Budget.MaxTokens > 0 && report.UsedTokens > m.Cfg.Budget.MaxTokens {
+						report.BudgetExceeded = true
+					}
+					mu.Unlock()
+					continue
+				}
 			}
 			wg.Add(1)
 			go func(w worker.Worker, u diff.Unit) {
@@ -95,6 +134,15 @@ func (m *Master) Review(ctx context.Context, units []diff.Unit) (*Report, error)
 					report.WorkerErrors = append(report.WorkerErrors, errors.New("worker "+res.Worker+" failed: "+res.Err.Error()))
 				} else {
 					m.logf("  <- %s on %s done in %s: %d finding(s), %d token(s)", w.Name, u.File, elapsed, len(res.Findings), res.UsedTokens)
+					// Only successful runs go to the cache — a saved
+					// error would otherwise be replayed forever as a
+					// silent zero-finding result.
+					if cacheOn {
+						key := cache.Key(u, w, m.ToolVersion, projectCtx)
+						if err := cache.Save(cacheRoot, key, w, u, res.Findings, res.UsedTokens); err != nil {
+							m.logf("  ?? cache save for %s on %s: %v", w.Name, u.File, err)
+						}
+					}
 				}
 				report.Findings = append(report.Findings, res.Findings...)
 				report.UsedTokens += res.UsedTokens
@@ -115,7 +163,47 @@ func (m *Master) Review(ctx context.Context, units []diff.Unit) (*Report, error)
 	}
 	sort.Strings(report.WorkersCalled)
 	report.Findings = dedupe(report.Findings)
+	report.Findings = m.applySuppressions(units, report.Findings)
 	return report, nil
+}
+
+// applySuppressions drops findings that target a line carrying an inline
+// `noqa-review:` marker on the added side of the diff. Each silenced
+// finding is reported to the progress log together with the developer's
+// stated reason, so the trail is visible even when the report itself shows
+// "0 findings". A marker with no matching finding is a no-op and does not
+// log anything — the BDD scenario asserts this explicitly.
+func (m *Master) applySuppressions(units []diff.Unit, findings []worker.Finding) []worker.Finding {
+	if len(findings) == 0 {
+		return findings
+	}
+	type key struct {
+		file string
+		line int
+	}
+	supp := map[key]string{}
+	for _, u := range units {
+		for ln, reason := range u.Suppressions() {
+			supp[key{file: u.File, line: ln}] = reason
+		}
+	}
+	if len(supp) == 0 {
+		return findings
+	}
+	kept := findings[:0]
+	suppressed := 0
+	for _, f := range findings {
+		if reason, ok := supp[key{file: f.File, line: f.Line}]; ok {
+			suppressed++
+			m.logf("suppressed 1 finding at %s:%d (noqa-review: %s)", f.File, f.Line, reason)
+			continue
+		}
+		kept = append(kept, f)
+	}
+	if suppressed > 0 {
+		m.logf("suppressed %d finding(s) via noqa-review", suppressed)
+	}
+	return kept
 }
 
 func (m *Master) enabledWorkers() []worker.Worker {
@@ -150,9 +238,6 @@ func (m *Master) projectContext() string {
 // dedupe collapses findings by (file, line, normalised-title), keeping the
 // highest-severity representative and recording every worker that flagged it.
 func dedupe(in []worker.Finding) []worker.Finding {
-	severityRank := map[string]int{
-		"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0,
-	}
 	type key struct {
 		file, title string
 		line        int
@@ -167,7 +252,7 @@ func dedupe(in []worker.Finding) []worker.Finding {
 			order = append(order, k)
 			continue
 		}
-		if severityRank[f.Severity] > severityRank[cur.Severity] {
+		if severity.Rank(f.Severity) > severity.Rank(cur.Severity) {
 			f.Worker = cur.Worker + "+" + f.Worker
 			bucket[k] = f
 		} else {
