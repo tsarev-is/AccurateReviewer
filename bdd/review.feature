@@ -184,6 +184,49 @@ Feature: Master + worker review
     And the output contains "0 findings"
     And the output does NOT contain "report written to"
 
+  Scenario: --output rejects paths that escape the working directory
+    # CWE-22: the value of --output is opened with os.Create, so a path like
+    # "../outside.txt" or "/etc/cron.d/job" could overwrite arbitrary files
+    # when the flag is composed from CI inputs. The CLI must reject such
+    # paths before opening anything, and must do so cleanly (exit 2) without
+    # creating the file.
+    Given the mock LLM is configured to return no findings
+    And a diff that adds a file "x.go" with content:
+      """
+      package main
+      """
+    When I run "accurate-reviewer review --diff - --output ../escape.txt" with that diff on stdin
+    Then the exit code is 2
+    And stderr contains "must stay within the working directory"
+    And no file "escape.txt" exists in the parent of the working directory
+
+  Scenario: --output rejects absolute paths
+    Given the mock LLM is configured to return no findings
+    And a diff that adds a file "x.go" with content:
+      """
+      package main
+      """
+    When I run "accurate-reviewer review --diff - --output /tmp/ar-escape.txt" with that diff on stdin
+    Then the exit code is 2
+    And stderr contains "must stay within the working directory"
+
+  Scenario: Secret matches never reach the --output file
+    # CWE-312: the pre-flight scan's whole purpose is to keep credentials on
+    # the developer's machine. Writing the (even-redacted) match value to a
+    # user-controlled filesystem path defeats that. The report file may only
+    # carry a generic abort notice; per-finding detail (rule, file, line,
+    # severity, redacted match) goes to stderr only.
+    Given the mock LLM is configured to return no findings
+    And a diff that adds a file "config.go" with content:
+      """
+      const apiKey = "AKIAIOSFODNN7EXAMPLE"
+      """
+    When I run "accurate-reviewer review --diff - --output report.txt" with that diff on stdin
+    Then the exit code is 1
+    And the file "report.txt" contains "secrets detected"
+    And the file "report.txt" does NOT contain "AKI"
+    And stderr contains "aws-access-key"
+
   Scenario: The token budget caps the review and the master reports the overage
     # Workers run in parallel per unit, so the budget is checked between
     # units, not within a single parallel batch. With two enabled workers

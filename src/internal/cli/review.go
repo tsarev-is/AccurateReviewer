@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -58,6 +60,9 @@ func newReviewCmd() *cobra.Command {
 			// finished even when the body is redirected to a file.
 			reportOut := cmd.OutOrStdout()
 			if outputPath != "" {
+				if err := validateOutputPath(outputPath); err != nil {
+					return Exit(2, "invalid --output: %v", err)
+				}
 				f, err := os.Create(outputPath)
 				if err != nil {
 					return Exit(1, "open output: %v", err)
@@ -74,11 +79,15 @@ func newReviewCmd() *cobra.Command {
 			}
 			if len(preFindings) > 0 && cfg.Secrets.Enabled {
 				logf("secrets scan: %d finding(s) — aborting", len(preFindings))
+				// CWE-312: the report sink may be a user-supplied path
+				// (--output), so per-finding detail — including the
+				// redacted match value — must not be written there. It
+				// goes to stderr only; the sink gets a generic notice.
 				for _, f := range preFindings {
-					fmt.Fprintf(reportOut, "  [%s] %s:%d rule=%s match=%s\n",
+					fmt.Fprintf(cmd.ErrOrStderr(), "  [%s] %s:%d rule=%s match=%s\n",
 						f.Severity, f.File, f.Line, f.Rule, f.Match)
 				}
-				fmt.Fprintln(reportOut, "secrets detected — aborting review")
+				fmt.Fprintf(reportOut, "secrets detected — aborting review (%d finding(s), see stderr)\n", len(preFindings))
 				if outputPath != "" {
 					fmt.Fprintf(cmd.OutOrStdout(), "report written to %s\n", outputPath)
 				}
@@ -139,6 +148,21 @@ func newReviewCmd() *cobra.Command {
 	cmd.Flags().StringVar(&toRef, "to", "", "git ref to diff to")
 	cmd.Flags().StringVarP(&outputPath, "output", "o", "", "write the report to this file instead of stdout")
 	return cmd
+}
+
+// validateOutputPath rejects --output values that point outside the current
+// working directory (CWE-22). In CI/CD, the flag is often composed from
+// external inputs; an attacker-controlled "../../etc/cron.d/job" or absolute
+// path would otherwise let os.Create silently overwrite arbitrary files.
+func validateOutputPath(p string) error {
+	if filepath.IsAbs(p) {
+		return fmt.Errorf("%q must stay within the working directory", p)
+	}
+	cleaned := filepath.Clean(p)
+	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%q must stay within the working directory", p)
+	}
+	return nil
 }
 
 func loadDiff(path, from, to string) ([]byte, error) {

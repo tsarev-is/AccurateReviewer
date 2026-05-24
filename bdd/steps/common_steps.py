@@ -414,6 +414,21 @@ def step_file_contains(context, path, needle):
     assert needle in content
 
 
+@then('the file "{path}" does NOT contain "{needle}"')
+def step_file_not_contains(context, path, needle):
+    content = (context.workdir / path).read_text(encoding="utf-8")
+    assert needle not in content, (
+        f'expected file {path!r} to NOT contain {needle!r}\n'
+        f'actual content:\n{content}'
+    )
+
+
+@then('no file "{name}" exists in the parent of the working directory')
+def step_no_file_in_parent(context, name):
+    candidate = context.workdir.parent / name
+    assert not candidate.exists(), f"unexpected file at {candidate}"
+
+
 @then('the JSON file "{path}" contains')
 def step_json_file_contains(context, path):
     full = _resolve_artifact(context, path)
