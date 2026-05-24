@@ -71,7 +71,11 @@ Do NOT report style or formatting.
 ` + findingSchemaPrompt
 
 // Run executes one worker against one review unit, returning structured findings.
-func (w Worker) Run(ctx context.Context, provider llm.Provider, model string, unit diff.Unit, projectContext string) Result {
+//
+// taskContext is optional: when empty the rendered prompt omits the
+// "Task context" section entirely (so a reviewer with no linked ticket
+// sees the same prompt shape as before this feature existed).
+func (w Worker) Run(ctx context.Context, provider llm.Provider, model string, unit diff.Unit, projectContext, taskContext string) Result {
 	body := renderUnit(unit)
 	opts := sanitizer.Default()
 	wrappedCode := sanitizer.Sanitize(body, opts)
@@ -80,7 +84,12 @@ func (w Worker) Run(ctx context.Context, provider llm.Provider, model string, un
 	// wrap it through the sanitizer so an attacker cannot prompt-inject
 	// the worker by planting instructions in any of those sources.
 	wrappedProject := sanitizer.SanitizeProject(projectContext, opts)
-	prompt := fmt.Sprintf("%s\n\nProject context:\n%s\nCode under review:\n%s\n", w.Prompt, wrappedProject, wrappedCode)
+
+	var taskSection string
+	if strings.TrimSpace(taskContext) != "" {
+		taskSection = "Task context:\n" + sanitizer.SanitizeTask(taskContext, opts) + "\n"
+	}
+	prompt := fmt.Sprintf("%s\n\n%sProject context:\n%s\nCode under review:\n%s\n", w.Prompt, taskSection, wrappedProject, wrappedCode)
 
 	resp, err := provider.Complete(ctx, llm.Request{
 		Role: llm.RoleWorker, Worker: w.Name, Model: model, Prompt: prompt, MaxTokens: 2048,

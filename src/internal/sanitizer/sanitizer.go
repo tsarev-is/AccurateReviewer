@@ -21,6 +21,12 @@ const (
 	// analyzer ingests — can prompt-inject the LLM. CWE-74.
 	StartProjectDelimiter = "===PROJECT-CONTEXT==="
 	EndProjectDelimiter   = "===END-PROJECT-CONTEXT==="
+
+	// Task descriptions fetched from a tracker (Jira/GitHub) or a local
+	// file are arbitrary user-controlled text and get the same wrap +
+	// neutralise treatment as the rest of the untrusted inputs.
+	StartTaskDelimiter = "===TASK-CONTEXT==="
+	EndTaskDelimiter   = "===END-TASK-CONTEXT==="
 )
 
 type rule struct {
@@ -38,6 +44,7 @@ var rules = []rule{
 	{"tool-call-forgery", regexp.MustCompile(`</?tool_use>`)},
 	{"end-delimiter-fake", regexp.MustCompile(regexp.QuoteMeta(EndDelimiter))},
 	{"end-project-delimiter-fake", regexp.MustCompile(regexp.QuoteMeta(EndProjectDelimiter))},
+	{"end-task-delimiter-fake", regexp.MustCompile(regexp.QuoteMeta(EndTaskDelimiter))},
 }
 
 type Options struct {
@@ -59,6 +66,14 @@ func Sanitize(snippet string, opts Options) string {
 // of its own instructions. Same neutralisation rules apply.
 func SanitizeProject(snippet string, opts Options) string {
 	return wrap(snippet, StartProjectDelimiter, EndProjectDelimiter, opts)
+}
+
+// SanitizeTask wraps an externally-sourced task description (from a Jira
+// or GitHub issue, or a local file) in a TASK-CONTEXT boundary. The body
+// is fully under attacker control whenever the issue tracker is open to
+// outside contributors, so the same neutralisation passes apply.
+func SanitizeTask(snippet string, opts Options) string {
+	return wrap(snippet, StartTaskDelimiter, EndTaskDelimiter, opts)
 }
 
 func wrap(snippet, startDelim, endDelim string, opts Options) string {

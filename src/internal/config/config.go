@@ -14,16 +14,33 @@ import (
 const SupportedVersion = 1
 
 type Config struct {
-	Version   int          `yaml:"version" json:"version"`
-	Checks    Checks       `yaml:"checks" json:"checks"`
-	Severity  Severity     `yaml:"severity" json:"severity"`
-	Exclude   []string     `yaml:"exclude" json:"exclude"`
-	Budget    Budget       `yaml:"budget" json:"budget"`
-	LLM       LLM          `yaml:"llm" json:"llm"`
-	Secrets   Secrets      `yaml:"secrets" json:"secrets"`
-	Sanitizer SanitizerCfg `yaml:"sanitizer" json:"sanitizer"`
+	Version      int          `yaml:"version" json:"version"`
+	Checks       Checks       `yaml:"checks" json:"checks"`
+	Severity     Severity     `yaml:"severity" json:"severity"`
+	Exclude      []string     `yaml:"exclude" json:"exclude"`
+	Budget       Budget       `yaml:"budget" json:"budget"`
+	LLM          LLM          `yaml:"llm" json:"llm"`
+	Secrets      Secrets      `yaml:"secrets" json:"secrets"`
+	Sanitizer    SanitizerCfg `yaml:"sanitizer" json:"sanitizer"`
+	Integrations Integrations `yaml:"integrations" json:"integrations"`
 
 	Warnings []string `yaml:"-" json:"-"`
+}
+
+// Integrations declares the subprocess commands that fetch task/issue
+// context from external trackers. We stay consistent with the LLM
+// access model: no HTTP client lives in this binary — fetching always
+// shells out to a user-provided CLI (`gh`, `jira`, etc.) that already
+// handles auth on the developer's machine. The `{id}` token in any arg
+// is substituted with the issue id at call time.
+type Integrations struct {
+	GitHub IntegrationSpec `yaml:"github" json:"github"`
+	Jira   IntegrationSpec `yaml:"jira" json:"jira"`
+}
+
+type IntegrationSpec struct {
+	Cmd            []string `yaml:"cmd" json:"cmd"`
+	TimeoutSeconds int      `yaml:"timeout_seconds" json:"timeout_seconds"`
 }
 
 type Checks struct {
@@ -117,6 +134,7 @@ func Parse(r io.Reader) (*Config, error) {
 	known := map[string]bool{
 		"version": true, "checks": true, "severity": true, "exclude": true,
 		"budget": true, "llm": true, "secrets": true, "sanitizer": true,
+		"integrations": true,
 	}
 	var warnings []string
 	for k := range generic {

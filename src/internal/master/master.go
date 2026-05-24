@@ -32,6 +32,11 @@ type Master struct {
 	Cfg      *config.Config
 	Provider llm.Provider
 	Snapshot *analyzer.Snapshot
+	// TaskContext, if non-empty, is rendered into each worker prompt as a
+	// "Task context" block (already sanitized in the caller's helper). It
+	// gives workers the intent of the change so they can flag mismatches
+	// between what the diff does and what the task asked for.
+	TaskContext string
 	// Progress, if non-nil, receives one-line human-readable status updates
 	// as units and workers start/finish. Intended for stderr so the user can
 	// watch the review unfold; stdout is reserved for the structured report.
@@ -80,7 +85,7 @@ func (m *Master) Review(ctx context.Context, units []diff.Unit) (*Report, error)
 				defer wg.Done()
 				m.logf("  -> %s on %s", w.Name, u.File)
 				start := time.Now()
-				res := w.Run(ctx, m.Provider, m.Cfg.LLM.Worker.Model, u, projectContext)
+				res := w.Run(ctx, m.Provider, m.Cfg.LLM.Worker.Model, u, projectContext, m.TaskContext)
 				elapsed := time.Since(start).Round(time.Millisecond)
 				mu.Lock()
 				defer mu.Unlock()

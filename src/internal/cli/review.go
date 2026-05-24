@@ -20,6 +20,7 @@ import (
 	"github.com/scaratec/accurate-reviewer/internal/master"
 	"github.com/scaratec/accurate-reviewer/internal/report"
 	"github.com/scaratec/accurate-reviewer/internal/secrets"
+	"github.com/scaratec/accurate-reviewer/internal/task"
 )
 
 func newReviewCmd() *cobra.Command {
@@ -28,6 +29,9 @@ func newReviewCmd() *cobra.Command {
 		fromRef    string
 		toRef      string
 		outputPath string
+		taskFile   string
+		jiraID     string
+		githubID   string
 	)
 	cmd := &cobra.Command{
 		Use:   "review",
@@ -53,6 +57,21 @@ func newReviewCmd() *cobra.Command {
 				return Exit(2, "%v", err)
 			}
 			logf("config loaded: provider=%s blocking=%s", cfg.LLM.Provider, cfg.Severity.Blocking)
+
+			// Resolve the (optional) task description before any expensive
+			// work — a misuse like "two task sources" or "missing file"
+			// should fail fast rather than after a successful diff parse.
+			taskOpts := task.Options{File: taskFile, GitHub: githubID, Jira: jiraID}
+			if _, err := taskOpts.Validate(); err != nil {
+				return Exit(2, "%v", err)
+			}
+			taskCtx, err := task.Load(cmd.Context(), taskOpts, cfg)
+			if err != nil {
+				return Exit(2, "%v", err)
+			}
+			if taskCtx != "" {
+				logf("task context loaded: %d byte(s)", len(taskCtx))
+			}
 
 			// Report sink: stdout by default, file when --output is given.
 			// Progress (stderr) and the "report written to ..." confirmation
@@ -109,7 +128,7 @@ func newReviewCmd() *cobra.Command {
 				logf("project snapshot: language=%s", snap.Language.Primary)
 			}
 
-			m := &master.Master{Cfg: cfg, Provider: provider, Snapshot: snap, Progress: progress}
+			m := &master.Master{Cfg: cfg, Provider: provider, Snapshot: snap, TaskContext: taskCtx, Progress: progress}
 			rep, err := m.Review(context.Background(), units)
 			if err != nil {
 				return Exit(1, "review: %v", err)
@@ -147,6 +166,9 @@ func newReviewCmd() *cobra.Command {
 	cmd.Flags().StringVar(&fromRef, "from", "", "git ref to diff from")
 	cmd.Flags().StringVar(&toRef, "to", "", "git ref to diff to")
 	cmd.Flags().StringVarP(&outputPath, "output", "o", "", "write the report to this file instead of stdout")
+	cmd.Flags().StringVar(&taskFile, "task-file", "", "path to a text file with the task description")
+	cmd.Flags().StringVar(&jiraID, "jira", "", "fetch the task description from the configured Jira CLI by issue id")
+	cmd.Flags().StringVar(&githubID, "github", "", "fetch the task description from the configured GitHub CLI by issue/PR id")
 	return cmd
 }
 

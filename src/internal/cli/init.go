@@ -61,6 +61,20 @@ secrets:
 sanitizer:
   enabled: true
   delimiter: "===CODE-UNDER-REVIEW==="
+
+# Optional task/issue trackers. When configured, ` + "`accurate-reviewer review`" + `
+# can be invoked with --jira <ID> or --github <ID> to fetch the issue body
+# via the named CLI and attach it as task context to every worker prompt.
+# Both fetchers shell out to a user-provided CLI that already handles auth
+# (gh, jira, etc.) — the binary never opens an HTTP connection itself.
+# The literal "{id}" token in any cmd arg is substituted with the issue id.
+integrations:
+  github:
+    cmd: []   # e.g. ["gh", "issue", "view", "{id}"]
+    timeout_seconds: 30
+  jira:
+    cmd: []   # e.g. ["jira", "issue", "view", "{id}", "--plain"]
+    timeout_seconds: 30
 `
 
 func newInitCmd() *cobra.Command {
