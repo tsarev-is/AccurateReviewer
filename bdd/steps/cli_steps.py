@@ -25,3 +25,15 @@ def step_git_repo_two_commits(context, path):
 @then('the output contains the file "{name}"')
 def step_output_has_file(context, name):
     assert name in context.last_run["stdout"], context.last_run["stdout"]
+
+
+@then('the output contains the value of the VERSION file')
+def step_output_has_version_file_value(context):
+    version_file = Path(__file__).resolve().parents[2] / "VERSION"
+    assert version_file.exists(), f"missing VERSION file at {version_file}"
+    version = version_file.read_text(encoding="utf-8").strip()
+    assert version, f"VERSION file at {version_file} is empty"
+    assert version in context.last_run["stdout"], (
+        f'expected version {version!r} from {version_file} in stdout:\n'
+        f'{context.last_run["stdout"]}'
+    )

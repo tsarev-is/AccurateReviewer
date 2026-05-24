@@ -10,6 +10,14 @@ GO := $(shell which go 2>/dev/null \
 SRC_DIR    := src
 BIN_DIR    := bin
 CLI_BIN    := $(BIN_DIR)/accurate-reviewer
+
+# Single source of truth for the released version is the VERSION file at
+# the repo root. The commit short SHA is read from git when available so
+# every build is uniquely identifiable.
+VERSION_VAL := $(shell tr -d '[:space:]' < VERSION 2>/dev/null || echo dev)
+COMMIT_VAL  := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+LDFLAGS     := -X 'github.com/scaratec/accurate-reviewer/internal/cli.Version=$(VERSION_VAL)' \
+               -X 'github.com/scaratec/accurate-reviewer/internal/cli.Commit=$(COMMIT_VAL)'
 # The mock LLM is a Python script that the BDD harness drops into a
 # per-scenario tempdir's PATH — there is no separate Go binary to build.
 
@@ -49,8 +57,8 @@ setup: setup-python
 	@mkdir -p $(BIN_DIR)
 
 build: setup
-	@echo "Building Go binary..."
-	cd $(SRC_DIR) && $(GO) build -o ../$(CLI_BIN) ./cmd/accurate-reviewer/
+	@echo "Building Go binary (version $(VERSION_VAL), commit $(COMMIT_VAL))..."
+	cd $(SRC_DIR) && $(GO) build -ldflags "$(LDFLAGS)" -o ../$(CLI_BIN) ./cmd/accurate-reviewer/
 	@echo "Build complete."
 
 # Per-feature targets. Each maps to a Gherkin tag.

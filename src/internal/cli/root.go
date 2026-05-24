@@ -7,7 +7,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const Version = "0.1.0"
+// Version and Commit are populated at build time via -ldflags by the
+// project's build scripts (Makefile, setup.sh). When built without
+// ldflags (e.g. plain `go build`) they fall back to dev placeholders so
+// every binary still answers --version coherently.
+var (
+	Version = "dev"
+	Commit  = "unknown"
+)
 
 type ExitError struct {
 	Code int
@@ -37,7 +44,7 @@ func NewRoot() *cobra.Command {
 		SilenceErrors: true,
 		Version:       Version,
 	}
-	root.SetVersionTemplate("accurate-reviewer {{.Version}}\n")
+	root.SetVersionTemplate(versionLine() + "\n")
 
 	root.AddCommand(
 		newInitCmd(),
@@ -47,6 +54,23 @@ func NewRoot() *cobra.Command {
 		newParseDiffCmd(),
 		newSanitizeCmd(),
 		newConfigCmd(),
+		newVersionCmd(),
 	)
 	return root
+}
+
+func versionLine() string {
+	return fmt.Sprintf("accurate-reviewer %s (commit %s)", Version, Commit)
+}
+
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the version and build commit",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			fmt.Fprintln(cmd.OutOrStdout(), versionLine())
+			return nil
+		},
+	}
 }

@@ -8,11 +8,23 @@ Feature: CLI command surface
     Given a temporary working directory
     And the accurate-reviewer binary is on PATH
 
-  Scenario: The binary reports its version
+  Scenario: The binary reports the version from the VERSION file
     When I run "accurate-reviewer --version"
     Then the exit code is 0
     And the output contains "accurate-reviewer"
     And the output matches the regex "\d+\.\d+\.\d+"
+    And the output contains the value of the VERSION file
+
+  Scenario: The version output includes the build commit identifier
+    When I run "accurate-reviewer --version"
+    Then the exit code is 0
+    And the output matches the regex "commit [0-9a-f]{7,}"
+
+  Scenario: A dedicated version subcommand returns the same string
+    When I run "accurate-reviewer version"
+    Then the exit code is 0
+    And the output contains the value of the VERSION file
+    And the output matches the regex "commit [0-9a-f]{7,}"
 
   Scenario: The top-level help lists the MVP commands
     When I run "accurate-reviewer --help"
