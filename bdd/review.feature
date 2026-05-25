@@ -304,6 +304,39 @@ Feature: Master + worker review
     And the output contains "1 findings"
     And stderr does NOT contain "suppressed"
 
+  Scenario: The architecture worker runs when enabled and a project snapshot exists
+    Given a .review.yml that enables checks "security, logic, architecture"
+    And a file ".review-cache/project.json" with content
+      """
+      {"schema_version":1,"language":{"primary":"go","mix":[{"name":"go","loc":42}]},"manifests":[{"kind":"go.mod","path":"go.mod"}],"frameworks":[],"entry_points":[],"fingerprint":"x"}
+      """
+    And the mock LLM records every worker call it receives
+    And a diff that adds a file "z.go" with content:
+      """
+      package z
+      func F() {}
+      """
+    When I run "accurate-reviewer review --diff -" with that diff on stdin
+    Then the workers called on the mock LLM are exactly:
+      | worker       |
+      | architecture |
+      | logic        |
+      | security     |
+
+  Scenario: The architecture worker is silently skipped when no project snapshot exists
+    Given a .review.yml that enables checks "security, logic, architecture"
+    And the mock LLM records every worker call it receives
+    And a diff that adds a file "z.go" with content:
+      """
+      package z
+      func F() {}
+      """
+    When I run "accurate-reviewer review --diff -" with that diff on stdin
+    Then the workers called on the mock LLM are exactly:
+      | worker   |
+      | logic    |
+      | security |
+
   Scenario: The token budget caps the review and the master reports the overage
     # Workers run in parallel per unit, so the budget is checked between
     # units, not within a single parallel batch. With two enabled workers

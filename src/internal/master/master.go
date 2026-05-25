@@ -214,6 +214,12 @@ func (m *Master) enabledWorkers() []worker.Worker {
 	if m.Cfg.Checks.Logic {
 		out = append(out, worker.Logic)
 	}
+	// Architecture is opt-in and depends on a project snapshot existing.
+	// Without the snapshot the worker has no conventions to compare against,
+	// so silently skip it rather than emit speculative findings.
+	if m.Cfg.Checks.Architecture && m.Snapshot != nil {
+		out = append(out, worker.Architecture)
+	}
 	return out
 }
 

@@ -38,8 +38,9 @@ type Worker struct {
 }
 
 var (
-	Security = Worker{Name: "security", Prompt: securityPrompt}
-	Logic    = Worker{Name: "logic", Prompt: logicPrompt}
+	Security     = Worker{Name: "security", Prompt: securityPrompt}
+	Logic        = Worker{Name: "logic", Prompt: logicPrompt}
+	Architecture = Worker{Name: "architecture", Prompt: architecturePrompt}
 )
 
 const findingSchemaPrompt = `Respond with ONLY a JSON array of findings — no
@@ -67,6 +68,19 @@ const logicPrompt = `You are a logic and correctness reviewer. Inspect the
 code between the delimiters and report concrete bugs: bad error handling,
 unhandled edge cases, off-by-one mistakes, race conditions, resource leaks.
 Do NOT report style or formatting.
+
+` + findingSchemaPrompt
+
+const architecturePrompt = `You are an architectural reviewer. Compare the
+code between the delimiters against the project context above and report
+violations of the project's established conventions: wrong layer/module
+for the responsibility shown, dependencies pointing the wrong way (e.g. a
+domain package importing a transport package), patterns or frameworks the
+project does not use being introduced ad-hoc, public API surface that
+diverges from how the rest of the codebase exposes things. Only report
+issues you can justify from the project context — if the snapshot does
+not show a relevant convention, do NOT speculate. Ignore style and
+formatting.
 
 ` + findingSchemaPrompt
 

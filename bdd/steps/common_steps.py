@@ -105,6 +105,21 @@ def step_review_yml_only_worker(context, worker):
     )
 
 
+@given('a .review.yml that enables checks "{checks}"')
+def step_review_yml_enables_checks(context, checks):
+    wanted = {c.strip() for c in checks.split(",") if c.strip()}
+    flags = ", ".join(
+        f"{name}: {'true' if name in wanted else 'false'}"
+        for name in ("security", "logic", "architecture")
+    )
+    (context.workdir / ".review.yml").write_text(
+        "version: 1\n"
+        f"checks: {{ {flags} }}\n"
+        "llm: { provider: mock }\n",
+        encoding="utf-8",
+    )
+
+
 @given('a .review.yml with budget.max_tokens set to {n:d}')
 def step_review_yml_budget(context, n):
     (context.workdir / ".review.yml").write_text(
