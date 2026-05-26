@@ -24,11 +24,26 @@ func Console(out io.Writer, findings []worker.Finding, blocking string, reviewed
 		if severity.AtLeast(f.Severity, blocking) {
 			blocked = true
 		}
-		fmt.Fprintf(out, "  [%s] %s:%d %s\n", f.Severity, sanitiseForTerminal(f.File), f.Line, sanitiseForTerminal(f.Title))
+		fixBadge := ""
+		if f.Fix != nil && len(f.Fix.Replacements) > 0 {
+			fixBadge = " [fix available]"
+		}
+		fmt.Fprintf(out, "  [%s] %s:%d %s%s\n", f.Severity, sanitiseForTerminal(f.File), f.Line, sanitiseForTerminal(f.Title), fixBadge)
 		if f.CWE != "" {
 			fmt.Fprintf(out, "      cwe=%s\n", sanitiseForTerminal(f.CWE))
 		}
 		fmt.Fprintf(out, "      why: %s\n", sanitiseForTerminal(f.Why))
+		// Grouped occurrences: same problem class at additional
+		// locations. Rendered as one extra indented line so a cursory
+		// reader still sees "this finding was reported at N places" even
+		// in the plain-text view.
+		if len(f.Occurrences) > 0 {
+			parts := make([]string, 0, len(f.Occurrences))
+			for _, occ := range f.Occurrences {
+				parts = append(parts, fmt.Sprintf("%s:%d", sanitiseForTerminal(occ.File), occ.Line))
+			}
+			fmt.Fprintf(out, "      also at: %s\n", strings.Join(parts, ", "))
+		}
 	}
 	fmt.Fprintf(out, "%d findings\n", len(findings))
 	return blocked

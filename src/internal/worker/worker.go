@@ -23,6 +23,51 @@ type Finding struct {
 	Why      string `json:"why"`
 	CWE      string `json:"cwe,omitempty"`
 	Worker   string `json:"worker"`
+	// Occurrences carries the secondary locations of a grouped finding —
+	// "the same problem class also at these (file, line)s". The primary
+	// location stays in File/Line so single-location findings serialise
+	// identically to the pre-grouping schema (the field is omitempty).
+	// Master fills this in after dedupe + suppressions; workers themselves
+	// always return one location per finding.
+	Occurrences []Location `json:"occurrences,omitempty"`
+	// Fix is an optional, validated, ready-to-apply patch the model offered
+	// alongside the finding. The worker drops any fix that targets lines
+	// outside the unit's added range or a different file before it reaches
+	// the report — only fixes the operator can safely `git apply` survive.
+	Fix *Fix `json:"fix,omitempty"`
+}
+
+// Location is a (file, line) pair used by Finding.Occurrences. Kept tiny
+// on purpose — anything richer should be a full Finding promoted to the
+// primary slot, not a richer Location.
+type Location struct {
+	File string `json:"file"`
+	Line int    `json:"line"`
+}
+
+// Fix is a model-suggested, mechanically-applicable patch. We deliberately
+// model it as a small set of (file, line-range, new-text) replacements —
+// not raw unified diff — for two reasons: (1) LLMs reliably emit text
+// blocks for given line numbers but reliably mangle "@@ -X,Y +X,Y @@"
+// headers; (2) we can validate the replacement against the diff (only
+// added lines are eligible) BEFORE the patch ever reaches `git apply`,
+// avoiding "applied but it touched legacy code" surprises. The apply-fixes
+// subcommand synthesises the unified diff at apply time.
+type Fix struct {
+	Description  string        `json:"description,omitempty"`
+	Replacements []Replacement `json:"replacements"`
+}
+
+// Replacement specifies one contiguous span of lines to rewrite. Line
+// numbers are 1-based and inclusive. NewText is the FULL replacement
+// content for that span; the apply-fixes synthesiser does NOT do
+// per-line diffing inside the span — it replaces the whole region.
+// NewText may contain any number of lines (zero means "delete the span").
+type Replacement struct {
+	File      string `json:"file"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	NewText   string `json:"new_text"`
 }
 
 type Result struct {
@@ -44,16 +89,34 @@ var (
 )
 
 const findingSchemaPrompt = `Respond with ONLY a JSON array of findings — no
-prose, no markdown fences. Each element MUST be an object with exactly these
-keys:
+prose, no markdown fences. Each element MUST be an object with these keys:
   - "file":     string  (path of the file the issue is in)
   - "line":     integer (1-based line number)
   - "severity": one of "critical" | "high" | "medium" | "low" | "info"
   - "title":    short imperative summary (≤ 80 chars)
   - "why":      one or two sentences explaining the impact
   - "cwe":      CWE id like "CWE-89", or omit if not applicable
-If you find nothing, return an empty array []. Do NOT include any other keys
-(no "description", no "recommendation", no "fix" — fold those into "why").`
+  - "fix":      optional — when, AND ONLY when, you can write a minimal,
+                mechanically-applicable replacement that resolves the
+                issue without changing unrelated behaviour. Schema:
+                  {
+                    "description": "<one-line explanation, optional>",
+                    "replacements": [
+                      {
+                        "file":       "<must match the file under review>",
+                        "start_line": <inclusive, 1-based line in the file>,
+                        "end_line":   <inclusive, 1-based; equal to start_line for single-line replacements>,
+                        "new_text":   "<the full new content for the span; multiple lines separated by \n>"
+                      }
+                    ]
+                  }
+                Replacements MUST target lines that are part of the
+                ADDED side of the diff under review. Do not propose
+                edits to context lines or other files; such fixes will
+                be dropped before they reach the report. Omit "fix"
+                entirely if you cannot produce a confident, minimal
+                replacement.
+If you find nothing, return an empty array [].`
 
 const securityPrompt = `You are a security-focused code reviewer. Inspect the
 code between the delimiters and report concrete vulnerabilities. Classify
@@ -84,12 +147,142 @@ formatting.
 
 ` + findingSchemaPrompt
 
+// languageHints adds a short, language-specific paragraph to the worker
+// prompt before the JSON-schema instructions. Hints are static strings
+// baked into the binary — they are NOT attacker-controlled and therefore
+// do not need to flow through the sanitizer. Outer key = worker name,
+// inner key = analyzer.Snapshot.Language.Primary value (lowercase, the
+// extension-derived names from analyzer.extLang).
+//
+// Languages without an entry simply skip the hint; this keeps the prompt
+// stable for languages the analyzer recognises but for which we have no
+// specialised guidance yet.
+var languageHints = map[string]map[string]string{
+	"security": {
+		"go": "Go-specific focus: data races on shared state without sync primitives, " +
+			"SQL built via string concatenation instead of database/sql parameterised " +
+			"Query/Exec, html/template vs text/template confusion enabling XSS, " +
+			"unbounded io.ReadAll on untrusted input, exec.Command with user-supplied " +
+			"arguments, weak randomness from math/rand for security tokens, missing " +
+			"context cancellation enabling resource exhaustion.",
+		"python": "Python-specific focus: pickle/marshal/yaml.load on untrusted data " +
+			"(insecure deserialisation), eval/exec/compile on user input, subprocess " +
+			"with shell=True and interpolated arguments, SQL via string interpolation " +
+			"instead of parameterised cursor.execute, requests/urllib calls with " +
+			"verify=False, Flask/Django responses rendering unescaped user input, " +
+			"weak hashlib choices (md5/sha1) for security purposes.",
+		"javascript": "JavaScript/Node-specific focus: prototype pollution via " +
+			"Object.assign/merge of untrusted input, eval/Function on user input, " +
+			"child_process.exec with interpolated arguments, SQL via template " +
+			"literals instead of parameterised queries, missing output escaping " +
+			"in templates enabling XSS, insecure JWT verification (alg:none), " +
+			"using Math.random for security-sensitive tokens.",
+		"typescript": "TypeScript-specific focus: same vectors as JavaScript " +
+			"(prototype pollution, eval, child_process, XSS, weak JWT), plus " +
+			"unsafe `as any` / `as unknown as T` casts that bypass type guarantees " +
+			"on untrusted boundaries.",
+		"rust": "Rust-specific focus: unsafe blocks crossing trust boundaries, " +
+			"manual lifetime/ownership tricks that may UAF, command::new with " +
+			"shell-interpolated arguments, deserialisation via serde on untrusted " +
+			"input without size limits, panics on untrusted input enabling DoS.",
+		"java": "Java-specific focus: ObjectInputStream / XMLDecoder / SnakeYAML " +
+			"deserialisation of untrusted data, JDBC SQL built by concatenation " +
+			"instead of PreparedStatement, Runtime.exec with interpolated " +
+			"arguments, XXE via unconfigured DocumentBuilderFactory/SAXParser, " +
+			"weak MessageDigest choices for security purposes.",
+		"csharp": "C#/.NET-specific focus: SQL built via string concatenation or " +
+			"interpolation instead of SqlParameter / parameterised DbCommand, " +
+			"insecure deserialisation via BinaryFormatter / NetDataContractSerializer / " +
+			"SoapFormatter / LosFormatter on untrusted input, Process.Start with " +
+			"shell-interpolated arguments, weak randomness from System.Random for " +
+			"security tokens (use RandomNumberGenerator), XXE via XmlReader / " +
+			"XmlDocument with DtdProcessing=Parse or XmlResolver left non-null, " +
+			"Razor @Html.Raw of untrusted input enabling XSS, weak hashes " +
+			"(MD5 / SHA1) used for security purposes, [AllowAnonymous] applied to " +
+			"endpoints that handle authenticated data.",
+	},
+	"logic": {
+		"go": "Go-specific focus: ignored errors from os/io/db calls, nil-pointer " +
+			"panics on map/struct fields after a returned err, goroutine leaks from " +
+			"forgotten cancel/close, defer in loops, range-loop variable capture in " +
+			"closures spawned as goroutines (still a footgun on older toolchains), " +
+			"forgotten io.Closer or sql.Rows.Close, type assertions without the " +
+			"comma-ok form.",
+		"python": "Python-specific focus: mutable default arguments, late-binding " +
+			"closures inside loops, missing await on coroutines, except: that " +
+			"swallows KeyboardInterrupt/SystemExit, off-by-one in slice/range, " +
+			"forgotten context manager on file/db handles, integer division vs true " +
+			"division mismatches.",
+		"javascript": "JavaScript/Node-specific focus: missing await on promises, " +
+			"unhandled rejections, == vs === confusion on falsy values, this-binding " +
+			"loss in callbacks, forEach with async callback ignoring sequencing, " +
+			"missing error handlers on streams/emitters.",
+		"typescript": "TypeScript-specific focus: same JS pitfalls plus implicit " +
+			"`any` masking real bugs, narrowing that is invalidated by a later " +
+			"await/yield, non-null assertions (`x!`) on values that can be undefined.",
+		"rust": "Rust-specific focus: unwrap/expect on Result/Option that can " +
+			"realistically be Err/None, integer overflow in debug-only checked " +
+			"paths, .await points inside critical sections holding a Mutex guard, " +
+			"forgotten ? on fallible calls.",
+		"java": "Java-specific focus: NullPointerException on chained calls, " +
+			"resource leaks (missing try-with-resources), == vs .equals on " +
+			"boxed types, ConcurrentModificationException in iteration-then-mutate " +
+			"patterns, swallowed InterruptedException without re-asserting the flag.",
+		"csharp": "C#/.NET-specific focus: async void outside event handlers, " +
+			".Result / .Wait() on Tasks producing sync-context deadlocks in " +
+			"ASP.NET classic / UI threads, missing await on Task-returning calls " +
+			"(fire-and-forget swallowing exceptions), missing using / Dispose on " +
+			"IDisposable resources (DbConnection, FileStream, HttpResponseMessage), " +
+			"multiple enumeration of IEnumerable that hides a re-executed query, " +
+			"== on boxed value types instead of .Equals, missing ConfigureAwait(false) " +
+			"in library code, null-conditional (?.) chains that mask a NullReferenceException " +
+			"one level deeper.",
+	},
+}
+
+// promptFor renders the worker's base prompt with an optional
+// language-specific hint paragraph inserted before the JSON-schema
+// instructions. When `language` is empty or has no hint registered for
+// this worker, the prompt is identical to `w.Prompt` — so the absence of
+// a snapshot leaves prompts unchanged from the pre-v1.0 shape.
+func (w Worker) promptFor(language string) string {
+	if language == "" {
+		return w.Prompt
+	}
+	hints, ok := languageHints[w.Name]
+	if !ok {
+		return w.Prompt
+	}
+	hint, ok := hints[language]
+	if !ok {
+		return w.Prompt
+	}
+	// Splice the hint right before findingSchemaPrompt. Both halves live in
+	// w.Prompt as one constant, so we split on a stable marker line. The
+	// marker is the literal first line of findingSchemaPrompt — if that
+	// changes, the split silently falls through and the hint is appended
+	// at the end, which is still better than no hint at all.
+	const marker = "Respond with ONLY a JSON array of findings"
+	idx := strings.Index(w.Prompt, marker)
+	if idx < 0 {
+		return w.Prompt + "\n\nLanguage-specific guidance:\n" + hint + "\n"
+	}
+	return w.Prompt[:idx] + "Language-specific guidance:\n" + hint + "\n\n" + w.Prompt[idx:]
+}
+
 // Run executes one worker against one review unit, returning structured findings.
 //
 // taskContext is optional: when empty the rendered prompt omits the
 // "Task context" section entirely (so a reviewer with no linked ticket
 // sees the same prompt shape as before this feature existed).
-func (w Worker) Run(ctx context.Context, provider llm.Provider, model string, unit diff.Unit, projectContext, taskContext string) Result {
+//
+// language is also optional: when non-empty and a hint is registered for
+// (w.Name, language), a short language-specific guidance paragraph is
+// spliced into the base prompt before the JSON-schema section. The
+// master decides whether to pass a language at all (it considers the
+// project snapshot and the checks.language_specific_prompts toggle), so
+// the worker stays oblivious to that policy.
+func (w Worker) Run(ctx context.Context, provider llm.Provider, model string, unit diff.Unit, projectContext, taskContext, language string) Result {
 	body := renderUnit(unit)
 	opts := sanitizer.Default()
 	wrappedCode := sanitizer.Sanitize(body, opts)
@@ -103,7 +296,8 @@ func (w Worker) Run(ctx context.Context, provider llm.Provider, model string, un
 	if strings.TrimSpace(taskContext) != "" {
 		taskSection = "Task context:\n" + sanitizer.SanitizeTask(taskContext, opts) + "\n"
 	}
-	prompt := fmt.Sprintf("%s\n\n%sProject context:\n%s\nCode under review:\n%s\n", w.Prompt, taskSection, wrappedProject, wrappedCode)
+	basePrompt := w.promptFor(language)
+	prompt := fmt.Sprintf("%s\n\n%sProject context:\n%s\nCode under review:\n%s\n", basePrompt, taskSection, wrappedProject, wrappedCode)
 
 	resp, err := provider.Complete(ctx, llm.Request{
 		Role: llm.RoleWorker, Worker: w.Name, Model: model, Prompt: prompt, MaxTokens: 2048,
@@ -121,8 +315,55 @@ func (w Worker) Run(ctx context.Context, provider llm.Provider, model string, un
 			findings[i].File = unit.File
 		}
 		findings[i].Severity = normaliseSeverity(findings[i].Severity)
+		findings[i].Fix = validateFix(findings[i].Fix, unit)
 	}
 	return Result{Worker: w.Name, Findings: findings, UsedTokens: resp.UsedTokens}
+}
+
+// validateFix drops a model-supplied fix that we cannot safely apply.
+// "Safely" means:
+//
+//   - every Replacement targets the SAME file as the unit under review
+//     (the model has no licence to rewrite unrelated files from inside
+//     one unit's prompt);
+//   - every line in every Replacement's [start_line, end_line] range
+//     is part of the unit's ADDED set (context lines and unchanged
+//     legacy code stay off-limits — same protection model as
+//     `noqa-review` only working on added lines);
+//   - the range is well-formed (start_line ≤ end_line, both ≥ 1);
+//   - the replacement set is non-empty.
+//
+// Any violation drops the WHOLE fix (returning nil), not the individual
+// bad replacement. A half-applied fix is harder to reason about than a
+// missing one, and the finding itself stays — operator just doesn't get
+// the auto-patch.
+func validateFix(f *Fix, unit diff.Unit) *Fix {
+	if f == nil || len(f.Replacements) == 0 {
+		return nil
+	}
+	added := map[int]bool{}
+	for _, h := range unit.Hunks {
+		for _, ln := range h.AddedLineNumbers {
+			added[ln] = true
+		}
+	}
+	if len(added) == 0 {
+		return nil
+	}
+	for _, r := range f.Replacements {
+		if r.File != unit.File {
+			return nil
+		}
+		if r.StartLine < 1 || r.EndLine < r.StartLine {
+			return nil
+		}
+		for ln := r.StartLine; ln <= r.EndLine; ln++ {
+			if !added[ln] {
+				return nil
+			}
+		}
+	}
+	return f
 }
 
 // validSeverity is the closed enum the rest of the pipeline understands. An

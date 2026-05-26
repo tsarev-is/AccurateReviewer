@@ -51,11 +51,13 @@ func NewRoot() *cobra.Command {
 		newAnalyzeCmd(),
 		newReviewCmd(),
 		newScanSecretsCmd(),
+		newScanCVEsCmd(),
 		newParseDiffCmd(),
 		newSanitizeCmd(),
 		newConfigCmd(),
 		newServeCmd(),
 		newPostCommentsCmd(),
+		newApplyFixesCmd(),
 		newVersionCmd(),
 	)
 	return root

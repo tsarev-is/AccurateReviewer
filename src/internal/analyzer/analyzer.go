@@ -60,6 +60,7 @@ var extLang = map[string]string{
 	".tsx":  "typescript",
 	".rs":   "rust",
 	".java": "java",
+	".cs":   "csharp",
 }
 
 type manifestRule struct {
@@ -127,6 +128,14 @@ func Analyze(root string) (*Snapshot, error) {
 					}
 				}
 			}
+		}
+		// .NET manifests have arbitrary basenames (`App.csproj`, `Foo.Bar.csproj`)
+		// so the exact-name table above can't capture them. Handle the suffix
+		// here; the kind stays the constant "csproj" regardless of the project
+		// file's actual name. packages.config / Directory.Packages.props are
+		// matched by exact name and live in the same family.
+		if strings.HasSuffix(base, ".csproj") || base == "packages.config" || base == "Directory.Packages.props" {
+			snap.Manifests = append(snap.Manifests, Manifest{Kind: "csproj", Path: rel})
 		}
 
 		// Language detection by extension + a rough LOC count for primary selection.

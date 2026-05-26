@@ -28,12 +28,17 @@ type Report struct {
 	WorkersCalled  []string
 	WorkerErrors   []error
 	BudgetExceeded bool
+	// FallbackEngaged is true once the master has switched workers from
+	// LLM.Worker.Model to LLM.Fallback.Model during this run. It stays true
+	// for the remainder of the report — the switch is sticky, the master
+	// never returns to the expensive model mid-run.
+	FallbackEngaged bool
 }
 
 type Master struct {
-	Cfg      *config.Config
-	Provider llm.Provider
-	Snapshot *analyzer.Snapshot
+	Cfg       *config.Config
+	Providers *ProviderSet
+	Snapshot  *analyzer.Snapshot
 	// TaskContext, if non-empty, is rendered into each worker prompt as a
 	// "Task context" block (already sanitized in the caller's helper). It
 	// gives workers the intent of the change so they can flag mismatches
@@ -71,11 +76,15 @@ func (m *Master) Review(ctx context.Context, units []diff.Unit) (*Report, error)
 	}
 
 	projectContext := m.projectContext()
+	workerLanguage := m.workerLanguage()
 	workerNames := make([]string, 0, len(workers))
 	for _, w := range workers {
 		workerNames = append(workerNames, w.Name)
 	}
 	m.logf("starting: %d unit(s), workers=[%s]", len(units), strings.Join(workerNames, ","))
+	if workerLanguage != "" {
+		m.logf("language-specific prompts enabled for: %s", workerLanguage)
+	}
 
 	var (
 		mu        sync.Mutex
@@ -93,6 +102,15 @@ func (m *Master) Review(ctx context.Context, units []diff.Unit) (*Report, error)
 	// re-walk Snapshot fields per (unit × worker).
 	projectCtx := m.projectContext()
 
+	// fallbackEngaged is sticky once true: the budget threshold check
+	// flips it under mu between worker spawns so concurrent goroutines
+	// from the same unit see a consistent value at spawn time. Per-worker
+	// provider overrides are intentionally abandoned once it flips —
+	// every subsequent call resolves through ProviderSet.Fallback for
+	// uniform cheap-path behaviour.
+	fallbackEngaged := false
+	hasFallback := m.Providers != nil && m.Providers.Fallback != nil
+
 	for idx, u := range units {
 		m.logf("unit %d/%d: %s", idx+1, len(units), u.File)
 		var wg sync.WaitGroup
@@ -100,31 +118,39 @@ func (m *Master) Review(ctx context.Context, units []diff.Unit) (*Report, error)
 			if report.BudgetExceeded {
 				break
 			}
+			mu.Lock()
+			engaged := fallbackEngaged
+			mu.Unlock()
+			providerForCall, modelForCall := m.Providers.For(w.Name, engaged)
+			// Cache key incorporates the provider's name so two providers
+			// running the same worker on the same model — say a local
+			// fake versus claude in CI — keep their findings in separate
+			// slots. Otherwise a fake's "no findings" result would
+			// silently replay against a real claude run.
+			cacheModelKey := providerForCall.Name() + ":" + modelForCall
 			// Cache lookup happens before spawning the goroutine so a hit
 			// short-circuits both the worker AND the LLM subprocess. The
 			// hit counts toward the budget (using the originally-recorded
 			// token cost) so a heavily-cached run still respects max_tokens.
 			if cacheOn {
-				key := cache.Key(u, w, m.ToolVersion, projectCtx)
+				key := cache.Key(u, w, m.ToolVersion, projectCtx, cacheModelKey)
 				if cached, tokens, ok := cache.Load(cacheRoot, key); ok {
 					m.logf("  -> %s on %s: cache hit (%d finding(s), %d token(s))", w.Name, u.File, len(cached), tokens)
 					mu.Lock()
 					calledSet[w.Name] = true
 					report.Findings = append(report.Findings, cached...)
 					report.UsedTokens += tokens
-					if m.Cfg.Budget.MaxTokens > 0 && report.UsedTokens > m.Cfg.Budget.MaxTokens {
-						report.BudgetExceeded = true
-					}
+					m.applyBudgetPolicy(report, &fallbackEngaged, hasFallback)
 					mu.Unlock()
 					continue
 				}
 			}
 			wg.Add(1)
-			go func(w worker.Worker, u diff.Unit) {
+			go func(w worker.Worker, u diff.Unit, provider llm.Provider, model, cacheKeyModel string) {
 				defer wg.Done()
-				m.logf("  -> %s on %s", w.Name, u.File)
+				m.logf("  -> %s on %s (provider=%s model=%s)", w.Name, u.File, provider.Name(), model)
 				start := time.Now()
-				res := w.Run(ctx, m.Provider, m.Cfg.LLM.Worker.Model, u, projectContext, m.TaskContext)
+				res := w.Run(ctx, provider, model, u, projectContext, m.TaskContext, workerLanguage)
 				elapsed := time.Since(start).Round(time.Millisecond)
 				mu.Lock()
 				defer mu.Unlock()
@@ -136,9 +162,11 @@ func (m *Master) Review(ctx context.Context, units []diff.Unit) (*Report, error)
 					m.logf("  <- %s on %s done in %s: %d finding(s), %d token(s)", w.Name, u.File, elapsed, len(res.Findings), res.UsedTokens)
 					// Only successful runs go to the cache — a saved
 					// error would otherwise be replayed forever as a
-					// silent zero-finding result.
+					// silent zero-finding result. Key includes the
+					// provider+model so fallback-quality results never
+					// replay against a budget-healthy run.
 					if cacheOn {
-						key := cache.Key(u, w, m.ToolVersion, projectCtx)
+						key := cache.Key(u, w, m.ToolVersion, projectCtx, cacheKeyModel)
 						if err := cache.Save(cacheRoot, key, w, u, res.Findings, res.UsedTokens); err != nil {
 							m.logf("  ?? cache save for %s on %s: %v", w.Name, u.File, err)
 						}
@@ -146,10 +174,8 @@ func (m *Master) Review(ctx context.Context, units []diff.Unit) (*Report, error)
 				}
 				report.Findings = append(report.Findings, res.Findings...)
 				report.UsedTokens += res.UsedTokens
-				if m.Cfg.Budget.MaxTokens > 0 && report.UsedTokens > m.Cfg.Budget.MaxTokens {
-					report.BudgetExceeded = true
-				}
-			}(w, u)
+				m.applyBudgetPolicy(report, &fallbackEngaged, hasFallback)
+			}(w, u, providerForCall, modelForCall, cacheModelKey)
 		}
 		wg.Wait()
 		if report.BudgetExceeded {
@@ -164,7 +190,80 @@ func (m *Master) Review(ctx context.Context, units []diff.Unit) (*Report, error)
 	sort.Strings(report.WorkersCalled)
 	report.Findings = dedupe(report.Findings)
 	report.Findings = m.applySuppressions(units, report.Findings)
+	report.Findings = groupOccurrences(report.Findings)
 	return report, nil
+}
+
+// groupOccurrences clusters findings of the same problem class that the
+// worker has surfaced at multiple locations (different lines in one file
+// or the same problem in another file). It runs AFTER dedupe and
+// suppressions so we group only on what survives:
+//
+//   - Key: (worker, normalised-title, normalised-cwe). Cross-worker
+//     grouping is intentionally out of scope — two workers seeing the
+//     "same" title are still distinct epistemic claims, and merging
+//     them would be hard to justify in the report.
+//   - The cluster's primary location is the highest-severity finding
+//     (ties: first seen). Every other location is recorded on the
+//     primary's Occurrences. The primary's Why/Title/CWE come from the
+//     promoted finding.
+//
+// Findings without a CWE group only with other no-CWE findings of the
+// same (worker, title); this is conservative — we'd rather emit two
+// groups than incorrectly merge two distinct issues that happen to
+// share a noun.
+func groupOccurrences(in []worker.Finding) []worker.Finding {
+	if len(in) < 2 {
+		return in
+	}
+	type gk struct {
+		worker, title, cwe string
+	}
+	bucket := map[gk]int{} // gk -> index into out
+	out := make([]worker.Finding, 0, len(in))
+	for _, f := range in {
+		k := gk{
+			worker: f.Worker,
+			title:  normalise(f.Title),
+			cwe:    strings.ToLower(strings.TrimSpace(f.CWE)),
+		}
+		idx, exists := bucket[k]
+		if !exists {
+			bucket[k] = len(out)
+			out = append(out, f)
+			continue
+		}
+		cur := out[idx]
+		incoming := worker.Location{File: f.File, Line: f.Line}
+		// Same primary location is a no-op — dedupe should have collapsed
+		// it earlier, but defend against a future change leaving a true
+		// duplicate alive.
+		if incoming.File == cur.File && incoming.Line == cur.Line {
+			continue
+		}
+		// Same as occurrence we already recorded? Skip.
+		alreadyRecorded := false
+		for _, occ := range cur.Occurrences {
+			if occ == incoming {
+				alreadyRecorded = true
+				break
+			}
+		}
+		if alreadyRecorded {
+			continue
+		}
+		if severity.Rank(f.Severity) > severity.Rank(cur.Severity) {
+			// Promote f to primary; demote the previous primary to an
+			// occurrence so its location stays visible in the report.
+			demoted := worker.Location{File: cur.File, Line: cur.Line}
+			f.Occurrences = append([]worker.Location{demoted}, cur.Occurrences...)
+			out[idx] = f
+		} else {
+			cur.Occurrences = append(cur.Occurrences, incoming)
+			out[idx] = cur
+		}
+	}
+	return out
 }
 
 // applySuppressions drops findings that target a line carrying an inline
@@ -221,6 +320,69 @@ func (m *Master) enabledWorkers() []worker.Worker {
 		out = append(out, worker.Architecture)
 	}
 	return out
+}
+
+// applyBudgetPolicy is called after every UsedTokens update (cache hit or
+// fresh worker result), with mu already held by the caller. It enforces
+// two thresholds:
+//
+//   - At report.UsedTokens > FallbackAt * MaxTokens (and a fallback
+//     (provider, model) was configured, and we are not already on it):
+//     flip fallbackEngaged. Subsequent worker spawns resolve through
+//     ProviderSet.For(_, true) and pick up the fallback path.
+//   - At report.UsedTokens > MaxTokens with no fallback configured, OR
+//     while already on the fallback: set BudgetExceeded so the dispatch
+//     loops break out.
+//
+// Callers MUST hold mu — this function mutates *fallbackEngaged and
+// report fields that the dispatch loop also reads.
+func (m *Master) applyBudgetPolicy(report *Report, fallbackEngaged *bool, hasFallback bool) {
+	max := m.Cfg.Budget.MaxTokens
+	if max <= 0 {
+		return
+	}
+	used := report.UsedTokens
+	if hasFallback && !*fallbackEngaged {
+		threshold := int(float64(max) * m.Cfg.Budget.FallbackAt)
+		if used > threshold {
+			m.logf("budget threshold reached (used=%d, limit=%d, fallback_at=%.2f) — switching to fallback provider/model",
+				used, max, m.Cfg.Budget.FallbackAt)
+			*fallbackEngaged = true
+			report.FallbackEngaged = true
+			// Allow the run to continue under the cheaper path. Hard
+			// stop is reserved for the case where even the fallback
+			// blows past MaxTokens — handled below on a subsequent
+			// invocation.
+			return
+		}
+	}
+	if used > max {
+		// Either no fallback configured, or we are already running on
+		// the fallback and still exceeded the limit. Either way the
+		// only remaining safety is to stop dispatching new workers.
+		report.BudgetExceeded = true
+	}
+}
+
+// workerLanguage decides whether to pass a language hint to workers. It
+// returns "" when there is no snapshot (workers have nothing project-
+// specific to specialise for) or when the operator has explicitly
+// disabled the toggle in .review.yml. Otherwise it returns the primary
+// language from the snapshot — which may itself be "unknown" for
+// projects the analyzer could not classify, in which case the worker's
+// hint map has no entry and the prompt remains unchanged.
+func (m *Master) workerLanguage() string {
+	if m.Snapshot == nil {
+		return ""
+	}
+	if !m.Cfg.Checks.LanguagePromptsEnabled() {
+		return ""
+	}
+	primary := m.Snapshot.Language.Primary
+	if primary == "" || primary == "unknown" {
+		return ""
+	}
+	return primary
 }
 
 func (m *Master) projectContext() string {

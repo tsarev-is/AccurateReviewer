@@ -178,6 +178,11 @@ def step_mock_scripted_table(context):
             e["text"] = row["findings"] or "[]"
         if "delay_ms" in row.headings and row["delay_ms"]:
             e["delay_ms"] = int(row["delay_ms"])
+        if "tokens" in row.headings and row["tokens"]:
+            # Threading this through lets a scenario script exact token
+            # costs per worker — required for budget-fallback scenarios
+            # where the threshold has to land between specific calls.
+            e["tokens"] = int(row["tokens"])
         if "behaviour" in row.headings:
             beh = row["behaviour"]
             if beh == "error":

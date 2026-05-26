@@ -1,0 +1,38 @@
+# Sample GitLab CI job that runs AccurateReviewer on every MR and posts
+# inline comments via the `glab` CLI. Copy this into the root of your
+# project as `.gitlab-ci.yml` (or merge into an existing pipeline).
+#
+# Requirements:
+#   - go 1.22+ (or replace the build step with a release-binary download)
+#   - glab CLI in the runner image (https://gitlab.com/gitlab-org/cli)
+#   - A CI/CD variable GITLAB_TOKEN (or one of glab's other auth modes)
+#     so `glab api` can post discussions on behalf of the bot user.
+#
+# The binary itself never talks to GitLab over HTTP — every API call is
+# tunnelled through `glab`, which handles auth.
+
+stages:
+  - review
+
+accurate-review:
+  stage: review
+  image: golang:1.22
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  before_script:
+    - apt-get update && apt-get install -y curl ca-certificates
+    - curl -sL https://gitlab.com/gitlab-org/cli/-/releases/permalink/latest/downloads/glab_$(uname -s | tr A-Z a-z)_amd64.tar.gz | tar -xz -C /usr/local/bin glab
+    - chmod +x /usr/local/bin/glab
+    - glab auth status   # fails loudly if GITLAB_TOKEN is not set
+    - git fetch origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+  script:
+    - make build
+    - ./bin/accurate-reviewer review --from "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" --to HEAD --output findings.json
+    - ./bin/accurate-reviewer post-comments --platform gitlab --report findings.json --pr "$CI_MERGE_REQUEST_IID" --repo "$CI_PROJECT_PATH"
+  variables:
+    GITLAB_TOKEN: "$CI_JOB_TOKEN"
+  artifacts:
+    paths:
+      - findings.json
+    expire_in: 1 week
+    when: always

@@ -37,9 +37,15 @@ const dirName = ".review-cache/findings"
 // `.review-cache/project.json` (new framework detected, language re-detected)
 // invalidates stored findings instead of silently replaying a stale answer
 // derived from the old context.
-func Key(u diff.Unit, w worker.Worker, toolVersion, projectContext string) string {
+//
+// `model` is the LLM model the worker was invoked with. Including it in
+// the key prevents budget-fallback runs (cheaper model) from polluting
+// the cache for full-quality runs, and vice versa — without this, a
+// review that engaged the fallback would seed lower-quality findings
+// that a subsequent budget-healthy run would silently replay.
+func Key(u diff.Unit, w worker.Worker, toolVersion, projectContext, model string) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "v2\n%s\n%s\n", toolVersion, w.Name)
+	fmt.Fprintf(h, "v3\n%s\n%s\n%s\n", toolVersion, w.Name, model)
 	h.Write([]byte(w.Prompt))
 	h.Write([]byte{0})
 	h.Write([]byte(projectContext))

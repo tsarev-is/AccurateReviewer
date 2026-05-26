@@ -13,6 +13,13 @@ checks:
   security: true
   logic: true
   architecture: false
+  # When true (default) and a project snapshot exists, workers receive a
+  # short language-specific guidance paragraph in their prompt.
+  language_specific_prompts: true
+  # Pre-flight CVE scan over dependency manifests via osv-scanner. Off by
+  # default because osv-scanner is an extra install — enable once you
+  # have it on PATH.
+  vulnerabilities: false
 
 severity:
   blocking: critical
@@ -28,6 +35,9 @@ exclude:
 budget:
   max_tokens: 200000
   max_usd: 1.00
+  # Fraction of max_tokens at which the master switches subsequent worker
+  # calls to llm.fallback.model (when configured). 0.8 by default.
+  fallback_at: 0.8
 
 llm:
   # provider: claude | codex | mock
@@ -40,6 +50,12 @@ llm:
     max_output_tokens: 4096
   worker:
     model: claude-sonnet-4-6
+    max_output_tokens: 2048
+  # Cheaper worker model the master switches to when the budget crosses
+  # budget.fallback_at. Same provider as the worker. Leave model empty
+  # to disable and keep the legacy "hard stop at MaxTokens" behaviour.
+  fallback:
+    model: claude-haiku-4-5-20251001
     max_output_tokens: 2048
   # API key is read from env by the CLI itself (claude/codex handle auth);
   # named here only so it gets passed through to the subprocess.
@@ -69,6 +85,23 @@ sanitizer:
   enabled: true
   delimiter: "===CODE-UNDER-REVIEW==="
 
+# Dependency-vulnerability scanner config. Shells out to osv-scanner; no
+# HTTP client is embedded. Leave bin empty to use the default "osv-scanner".
+cve:
+  bin: osv-scanner
+  timeout_seconds: 60
+  min_severity: medium
+
+# How 'post-comments' reaches the forge. platform: github | gitlab |
+# bitbucket. Auto-detected from the git remote when omitted. Per-platform
+# bin overrides the CLI name (defaults: gh / glab / bb). The binary opens
+# no HTTP connections — every request goes through the platform CLI.
+comments:
+  platform: github
+  github:    { bin: gh }
+  gitlab:    { bin: glab }
+  bitbucket: { bin: bb }
+
 # Optional task/issue trackers. When configured, ` + "`accurate-reviewer review`" + `
 # can be invoked with --jira <ID> or --github <ID> to fetch the issue body
 # via the named CLI and attach it as task context to every worker prompt.
@@ -81,6 +114,9 @@ integrations:
     timeout_seconds: 30
   jira:
     cmd: []   # e.g. ["jira", "issue", "view", "{id}", "--plain"]
+    timeout_seconds: 30
+  linear:
+    cmd: []   # e.g. ["linear", "issue", "view", "{id}", "--format", "markdown"]
     timeout_seconds: 30
 `
 

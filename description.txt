@@ -96,16 +96,16 @@ Inline-комментарии в PR
 Кэширование по хэшу
 Inline-suppressions в коде
 
-v1.0 — production-ready
+v1.0 — production-ready (shipped)
 
-Мультиязычность (определение языка, язык-специфичные промпты)
-Подтягивание контекста задачи из трекеров (Jira/Linear/GitHub Issues)
-Уязвимости зависимостей (поиск CVE по версиям из манифестов через web search)
-Несколько LLM-провайдеров одновременно
-Предлагаемые фиксы с возможностью применить
-Группировка дубликатов находок
-Бюджет токенов и fallback на дешёвую модель
-Поддержка GitLab/Bitbucket
+Мультиязычность (определение языка, язык-специфичные промпты) — Go, Python, JS/TS, Rust, Java, C#/.NET
+Подтягивание контекста задачи из трекеров (Jira/Linear/GitHub Issues) — через user-installed CLI (gh/jira/linear)
+Уязвимости зависимостей — pre-flight через локальный osv-scanner (+ subcommand scan-cves)
+Несколько LLM-провайдеров одновременно — per-worker оверрайды через llm.workers.<name>.{provider, model}; fallback может иметь свой провайдер
+Предлагаемые фиксы с возможностью применить — структурированные Replacements валидируются на added-строках; subcommand apply-fixes синтезирует unified diff и прогоняет через git apply
+Группировка дубликатов находок — кластеризация по (worker, normalised-title, cwe) с primary + occurrences[]; cross-worker слияние сознательно out of scope
+Бюджет токенов и fallback на дешёвую модель — budget.fallback_at + llm.fallback.{provider,model}; ключ кэша включает провайдера
+Поддержка GitLab/Bitbucket — post-comments --platform с авто-детектом через git remote; шеллит в gh/glab/bb (никаких HTTP-клиентов в бинарнике)
 
 v1.5 — точнее и умнее
 

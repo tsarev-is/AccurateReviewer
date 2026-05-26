@@ -15,6 +15,7 @@ import (
 
 	"github.com/scaratec/accurate-reviewer/internal/analyzer"
 	"github.com/scaratec/accurate-reviewer/internal/config"
+	"github.com/scaratec/accurate-reviewer/internal/cves"
 	"github.com/scaratec/accurate-reviewer/internal/diff"
 	"github.com/scaratec/accurate-reviewer/internal/llm"
 	"github.com/scaratec/accurate-reviewer/internal/master"
@@ -34,6 +35,7 @@ func newReviewCmd() *cobra.Command {
 		taskFile   string
 		jiraID     string
 		githubID   string
+		linearID   string
 		noCache    bool
 		fullMode   bool
 	)
@@ -80,7 +82,7 @@ func newReviewCmd() *cobra.Command {
 			// Resolve the (optional) task description before any expensive
 			// work — a misuse like "two task sources" or "missing file"
 			// should fail fast rather than after a successful diff parse.
-			taskOpts := task.Options{File: taskFile, GitHub: githubID, Jira: jiraID}
+			taskOpts := task.Options{File: taskFile, GitHub: githubID, Jira: jiraID, Linear: linearID}
 			if _, err := taskOpts.Validate(); err != nil {
 				return Exit(2, "%v", err)
 			}
@@ -162,7 +164,7 @@ func newReviewCmd() *cobra.Command {
 				logf("parsed %d review unit(s)", len(units))
 			}
 
-			provider := selectProvider(cfg)
+			providers := buildProviderSet(cfg)
 			snap, _ := analyzer.ReadSnapshot(".")
 			if snap == nil {
 				logf("no project snapshot — running without it")
@@ -174,10 +176,36 @@ func newReviewCmd() *cobra.Command {
 				falseVal := false
 				cfg.Cache.Enabled = &falseVal
 			}
-			m := &master.Master{Cfg: cfg, Provider: provider, Snapshot: snap, TaskContext: taskCtx, Progress: progress, ToolVersion: Version, CacheRoot: "."}
+			m := &master.Master{Cfg: cfg, Providers: providers, Snapshot: snap, TaskContext: taskCtx, Progress: progress, ToolVersion: Version, CacheRoot: "."}
 			rep, err := m.Review(context.Background(), units)
 			if err != nil {
 				return Exit(1, "review: %v", err)
+			}
+
+			// Pre-flight CVE scan via osv-scanner. Pre-pended to the
+			// finding list so the report shows known-vulnerable
+			// dependencies before the LLM-derived issues — high-severity
+			// CVEs deserve the operator's first attention. A missing
+			// osv-scanner CLI is logged once and the run continues
+			// (Required=false here; the standalone `scan-cves`
+			// subcommand sets Required=true so a missing tool is loud).
+			if cfg.Checks.Vulnerabilities {
+				logf("pre-flight CVE scan")
+				cveOpts := cves.Options{
+					Bin:            cfg.CVE.Bin,
+					TimeoutSeconds: cfg.CVE.TimeoutSeconds,
+					MinSeverity:    cfg.CVE.MinSeverity,
+					Required:       false,
+				}
+				vulns, cerr := cves.Scan(context.Background(), ".", cveOpts)
+				if cerr != nil {
+					logf("CVE scan failed: %v — continuing without it", cerr)
+				} else if len(vulns) > 0 {
+					logf("CVE scan: %d advisory finding(s)", len(vulns))
+					rep.Findings = append(vulnsToFindings(vulns), rep.Findings...)
+				} else {
+					logf("CVE scan: clean (or osv-scanner not installed)")
+				}
 			}
 
 			reviewed := make([]string, 0, len(units))
@@ -240,6 +268,7 @@ func newReviewCmd() *cobra.Command {
 	cmd.Flags().StringVar(&taskFile, "task-file", "", "path to a text file with the task description")
 	cmd.Flags().StringVar(&jiraID, "jira", "", "fetch the task description from the configured Jira CLI by issue id")
 	cmd.Flags().StringVar(&githubID, "github", "", "fetch the task description from the configured GitHub CLI by issue/PR id")
+	cmd.Flags().StringVar(&linearID, "linear", "", "fetch the task description from the configured Linear CLI by issue id")
 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "ignore the .review-cache/findings store and re-run every worker")
 	cmd.Flags().BoolVar(&fullMode, "full", false, "review every file in the working directory (informational — never blocks)")
 	return cmd
@@ -316,6 +345,110 @@ func selectProvider(cfg *config.Config) llm.Provider {
 		Timeout:   time.Duration(cfg.LLM.CLI.TimeoutSeconds) * time.Second,
 		PassEnv:   passEnv,
 	}
+}
+
+// buildProviderSet wires the multi-provider resolver. The TOP-LEVEL
+// provider honours every operator-supplied CLI override (`llm.cli.*`) —
+// that's the slot where a deployment can change how `claude`/`codex` get
+// spawned. Per-worker overrides and the fallback provider use the
+// built-in defaults for their named provider; operators who need to
+// customise those CLIs further would have to live with that constraint
+// (rare in practice, and adding per-override CLI specs is a 4x config
+// surface explosion).
+//
+// The set always carries (Default, DefaultModel). Per-worker entries
+// only appear when the operator named a worker in llm.workers. Fallback
+// is only populated when llm.fallback.model is set — otherwise the
+// master never switches paths and the budget enforcement becomes a hard
+// stop (the legacy behaviour from before fallback existed).
+func buildProviderSet(cfg *config.Config) *master.ProviderSet {
+	set := &master.ProviderSet{
+		Default:      selectProvider(cfg),
+		DefaultModel: cfg.LLM.Worker.Model,
+	}
+	for name, spec := range cfg.LLM.Workers {
+		var p llm.Provider
+		if spec.Provider != "" && spec.Provider != cfg.LLM.Provider {
+			p = builtinCLIProvider(spec.Provider)
+		}
+		set.RegisterWorker(name, p, spec.Model)
+	}
+	if cfg.LLM.Fallback.Model != "" {
+		fbProvider := set.Default
+		if cfg.LLM.Fallback.Provider != "" && cfg.LLM.Fallback.Provider != cfg.LLM.Provider {
+			fbProvider = builtinCLIProvider(cfg.LLM.Fallback.Provider)
+		}
+		set.Fallback = fbProvider
+		set.FallbackModel = cfg.LLM.Fallback.Model
+	}
+	return set
+}
+
+// builtinCLIProvider returns a CLIProvider for a named provider using
+// only the binary's compiled-in defaults — no operator CLI overrides.
+// Used for per-worker and fallback overrides where the operator can
+// pick the provider name but not the spawn details. The defaults match
+// applyCLIDefaults in the config package; if either drifts, the worker
+// scenario "security via claude / logic via codex" notices because the
+// fake CLI logs argv0 verbatim.
+func builtinCLIProvider(name string) llm.Provider {
+	switch name {
+	case "claude":
+		return &llm.CLIProvider{
+			Name_:     "claude",
+			Bin:       "claude",
+			Args:      []string{"-p"},
+			ModelFlag: "--model",
+			Timeout:   300 * time.Second,
+		}
+	case "codex":
+		return &llm.CLIProvider{
+			Name_:   "codex",
+			Bin:     "codex",
+			Args:    []string{"exec"},
+			Timeout: 300 * time.Second,
+		}
+	case "mock":
+		return &llm.CLIProvider{
+			Name_:   "mock",
+			Bin:     "ar-mock-cli",
+			Timeout: 30 * time.Second,
+		}
+	}
+	return nil
+}
+
+// vulnsToFindings adapts CVE advisories into worker.Finding records so
+// they share the same report/output pipeline as LLM-derived issues. The
+// Worker field is set to "cves" — that label flows through dedupe() but
+// CVE findings rarely collide with LLM findings (different Line values),
+// so the practical effect is just a visible attribution in the report.
+// Line is 0 because the advisory targets a manifest declaration, not a
+// specific source line. Title concatenates the CVE/GHSA id with the
+// affected package@version for a scannable single-line headline.
+func vulnsToFindings(vulns []cves.Vuln) []worker.Finding {
+	out := make([]worker.Finding, 0, len(vulns))
+	for _, v := range vulns {
+		id := v.ID
+		if v.CVE != "" {
+			id = v.CVE
+		}
+		title := fmt.Sprintf("%s in %s@%s", id, v.Package, v.Version)
+		why := v.Summary
+		if v.FixedIn != "" {
+			why = strings.TrimSpace(why) + " — upgrade to " + v.FixedIn
+		}
+		out = append(out, worker.Finding{
+			File:     v.File,
+			Line:     0,
+			Severity: v.Severity,
+			Title:    title,
+			Why:      why,
+			CWE:      v.CVE,
+			Worker:   "cves",
+		})
+	}
+	return out
 }
 
 // scanDiffForSecrets feeds added lines from the raw diff into the secrets

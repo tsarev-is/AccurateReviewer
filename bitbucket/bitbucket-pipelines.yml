@@ -1,0 +1,39 @@
+# Sample Bitbucket Pipelines configuration that runs AccurateReviewer on
+# every PR and posts inline comments via a `bb` CLI. Copy this into the
+# root of your project as `bitbucket-pipelines.yml` (or merge with your
+# existing pipeline).
+#
+# Requirements:
+#   - go 1.22+ image (or replace the build step with a release-binary
+#     download)
+#   - A `bb`-compatible Bitbucket CLI on PATH. Several community CLIs
+#     publish under this name; the one this sample assumes accepts
+#     `bb pr comment <id> --file F --line L --message M`. Override the
+#     binary name via .review.yml `comments.bitbucket.bin` if yours is
+#     packaged under a different name.
+#   - Repository variables BITBUCKET_USERNAME and BITBUCKET_APP_PASSWORD
+#     so `bb` can authenticate (or the equivalent env vars your CLI of
+#     choice expects).
+#
+# The binary itself never talks to Bitbucket over HTTP — every API call
+# is tunnelled through `bb`, which handles auth.
+
+image: golang:1.22
+
+pipelines:
+  pull-requests:
+    "**":
+      - step:
+          name: AccurateReviewer
+          caches:
+            - go
+          script:
+            - apt-get update && apt-get install -y curl ca-certificates git
+            # Install your preferred `bb` CLI here. Example placeholder:
+            # - curl -sL https://example.invalid/bb -o /usr/local/bin/bb && chmod +x /usr/local/bin/bb
+            - git fetch origin "$BITBUCKET_PR_DESTINATION_BRANCH"
+            - make build
+            - ./bin/accurate-reviewer review --from "origin/$BITBUCKET_PR_DESTINATION_BRANCH" --to HEAD --output findings.json
+            - ./bin/accurate-reviewer post-comments --platform bitbucket --report findings.json --pr "$BITBUCKET_PR_ID" --repo "$BITBUCKET_REPO_FULL_NAME"
+          artifacts:
+            - findings.json

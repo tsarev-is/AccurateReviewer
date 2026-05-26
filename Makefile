@@ -24,7 +24,9 @@ LDFLAGS     := -X 'github.com/scaratec/accurate-reviewer/internal/cli.Version=$(
 .PHONY: help setup setup-python build clean \
         test-cli test-secrets test-sanitizer test-diff test-analyzer \
         test-review test-config test-llm test-cache test-full test-html \
-        test-action test-all
+        test-action test-language-prompts test-budget test-cves \
+        test-gitlab test-bitbucket test-dedupe-groups test-apply-fixes \
+        test-multi-provider test-all
 
 help:
 	@echo "Usage: make [target]"
@@ -99,6 +101,30 @@ test-html:      build
 
 test-action:    build
 	@bash -c "source .venv/bin/activate && behave bdd/ --tags=@action"
+
+test-language-prompts: build
+	@bash -c "source .venv/bin/activate && behave bdd/ --tags=@language-prompts"
+
+test-budget: build
+	@bash -c "source .venv/bin/activate && behave bdd/ --tags=@budget"
+
+test-cves: build
+	@bash -c "source .venv/bin/activate && behave bdd/ --tags=@cves"
+
+test-gitlab: build
+	@bash -c "source .venv/bin/activate && behave bdd/ --tags=@gitlab"
+
+test-bitbucket: build
+	@bash -c "source .venv/bin/activate && behave bdd/ --tags=@bitbucket"
+
+test-dedupe-groups: build
+	@bash -c "source .venv/bin/activate && behave bdd/ --tags=@dedupe-groups"
+
+test-apply-fixes: build
+	@bash -c "source .venv/bin/activate && behave bdd/ --tags=@apply-fixes"
+
+test-multi-provider: build
+	@bash -c "source .venv/bin/activate && behave bdd/ --tags=@multi-provider"
 
 test-all:       build
 	@bash -c "source .venv/bin/activate && behave bdd/"

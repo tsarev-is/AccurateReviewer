@@ -1,11 +1,12 @@
 // Package task resolves the optional task/issue context that the review
 // command attaches to every worker prompt.
 //
-// Three source kinds are supported, in order of how the CLI exposes them:
+// Four source kinds are supported, in order of how the CLI exposes them:
 //
 //	--task-file <path>  : read description from a local text file
 //	--github <id>       : shell out to the configured `github` integration
 //	--jira <id>         : shell out to the configured `jira` integration
+//	--linear <id>       : shell out to the configured `linear` integration
 //
 // The "shell out" half is deliberate. This binary owns no HTTP client for
 // any vendor — fetching uses whatever CLI the developer already has
@@ -37,6 +38,7 @@ const (
 	SourceFile
 	SourceGitHub
 	SourceJira
+	SourceLinear
 )
 
 // Options groups the flag values the review command collects. Exactly
@@ -45,6 +47,7 @@ type Options struct {
 	File   string
 	GitHub string
 	Jira   string
+	Linear string
 }
 
 // Validate returns the selected source, or an error if the caller passed
@@ -65,6 +68,10 @@ func (o Options) Validate() (Source, error) {
 	if o.Jira != "" {
 		chosen = append(chosen, "--jira")
 		src = SourceJira
+	}
+	if o.Linear != "" {
+		chosen = append(chosen, "--linear")
+		src = SourceLinear
 	}
 	if len(chosen) > 1 {
 		return SourceNone, fmt.Errorf("only one task source may be given at a time (got: %s)", strings.Join(chosen, ", "))
@@ -90,6 +97,8 @@ func Load(ctx context.Context, opts Options, cfg *config.Config) (string, error)
 		return runIntegration(ctx, "github", cfg.Integrations.GitHub, opts.GitHub)
 	case SourceJira:
 		return runIntegration(ctx, "jira", cfg.Integrations.Jira, opts.Jira)
+	case SourceLinear:
+		return runIntegration(ctx, "linear", cfg.Integrations.Linear, opts.Linear)
 	default:
 		return "", fmt.Errorf("unsupported task source")
 	}

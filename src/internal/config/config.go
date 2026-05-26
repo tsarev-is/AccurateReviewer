@@ -24,6 +24,8 @@ type Config struct {
 	Sanitizer    SanitizerCfg `yaml:"sanitizer" json:"sanitizer"`
 	Integrations Integrations `yaml:"integrations" json:"integrations"`
 	Cache        Cache        `yaml:"cache" json:"cache"`
+	CVE          CVE          `yaml:"cve" json:"cve"`
+	Comments     Comments     `yaml:"comments" json:"comments"`
 
 	Warnings []string `yaml:"-" json:"-"`
 }
@@ -56,6 +58,7 @@ func (c Cache) IsEnabled() bool {
 type Integrations struct {
 	GitHub IntegrationSpec `yaml:"github" json:"github"`
 	Jira   IntegrationSpec `yaml:"jira" json:"jira"`
+	Linear IntegrationSpec `yaml:"linear" json:"linear"`
 }
 
 type IntegrationSpec struct {
@@ -63,10 +66,59 @@ type IntegrationSpec struct {
 	TimeoutSeconds int      `yaml:"timeout_seconds" json:"timeout_seconds"`
 }
 
+// Comments controls how `post-comments` reaches each forge. Platform
+// selects the default poster; per-platform sub-blocks let the operator
+// override the CLI binary name when their installation differs from the
+// stock `gh` / `glab` / `bb`. Empty values mean "use the built-in
+// defaults" — minimal configs (just `comments: { platform: gitlab }`)
+// keep working.
+type Comments struct {
+	Platform  string      `yaml:"platform" json:"platform"`
+	GitHub    CommentsCLI `yaml:"github" json:"github"`
+	GitLab    CommentsCLI `yaml:"gitlab" json:"gitlab"`
+	Bitbucket CommentsCLI `yaml:"bitbucket" json:"bitbucket"`
+}
+
+type CommentsCLI struct {
+	Bin string `yaml:"bin" json:"bin"`
+}
+
+// CVE configures the dependency-vulnerability pre-flight. The binary is
+// always osv-scanner (a single CLI covers every supported ecosystem);
+// MinSeverity drops anything below the threshold so a noisy advisory
+// stream does not bury actionable issues. Same shell-out / no-HTTP
+// pattern as the LLM and tracker integrations.
+type CVE struct {
+	Bin            string `yaml:"bin" json:"bin"`
+	TimeoutSeconds int    `yaml:"timeout_seconds" json:"timeout_seconds"`
+	MinSeverity    string `yaml:"min_severity" json:"min_severity"`
+}
+
 type Checks struct {
 	Security     bool `yaml:"security" json:"security"`
 	Logic        bool `yaml:"logic" json:"logic"`
 	Architecture bool `yaml:"architecture" json:"architecture"`
+	// Vulnerabilities toggles the pre-flight CVE scan over dependency
+	// manifests via osv-scanner. A missing osv-scanner CLI is logged and
+	// the run continues — this flag controls whether the scan is even
+	// attempted, not whether a missing tool aborts the review.
+	Vulnerabilities bool `yaml:"vulnerabilities" json:"vulnerabilities"`
+	// LanguageSpecificPrompts toggles the language-aware hint paragraph that
+	// gets injected into every worker prompt when a project snapshot is
+	// loaded. Wrapped in *bool — same idiom as Cache.Enabled — so a config
+	// written before this field existed defaults to on rather than silently
+	// off. With no snapshot the toggle is moot: the worker has no language
+	// to specialise for and the master passes "" anyway.
+	LanguageSpecificPrompts *bool `yaml:"language_specific_prompts" json:"language_specific_prompts"`
+}
+
+// LanguagePromptsEnabled returns the effective toggle: present-and-true,
+// absent (defaults to true), or present-and-false.
+func (c Checks) LanguagePromptsEnabled() bool {
+	if c.LanguageSpecificPrompts == nil {
+		return true
+	}
+	return *c.LanguageSpecificPrompts
 }
 
 type Severity struct {
@@ -77,21 +129,51 @@ type Severity struct {
 type Budget struct {
 	MaxTokens int     `yaml:"max_tokens" json:"max_tokens"`
 	MaxUSD    float64 `yaml:"max_usd" json:"max_usd"`
+	// FallbackAt is the fraction of MaxTokens at which the master switches
+	// every subsequent worker call to LLM.Fallback.Model (when configured).
+	// Default 0.8 — chosen so a handful of in-flight workers can finish on
+	// the original model before the switch lands. Out-of-range values fall
+	// back to the default at parse time.
+	FallbackAt float64 `yaml:"fallback_at" json:"fallback_at"`
 }
 
 // LLM holds the chosen provider, the per-role model overrides, and the CLI
 // invocation parameters that the exec-provider needs. We deliberately
 // removed the in-process HTTP mock: in MVP the only way the tool talks to a
 // model is by spawning a CLI subprocess (`claude`, `codex`, or a test fake).
+//
+// Fallback names the cheaper worker model the master switches to when
+// the token budget crosses Budget.FallbackAt. Provider stays the same
+// (per-role multi-provider is intentionally out of scope for v1.0).
+// Leaving Fallback.Model empty disables the feature entirely — the
+// master keeps the legacy "stop at MaxTokens" behaviour.
 type LLM struct {
 	Provider  string    `yaml:"provider" json:"provider"`
 	Master    ModelSpec `yaml:"master" json:"master"`
 	Worker    ModelSpec `yaml:"worker" json:"worker"`
+	Fallback  ModelSpec `yaml:"fallback" json:"fallback"`
 	APIKeyEnv string    `yaml:"api_key_env" json:"api_key_env"`
 	CLI       CLISpec   `yaml:"cli" json:"cli"`
+	// Workers carries per-worker provider/model overrides keyed by worker
+	// name (`security`, `logic`, `architecture`). Each entry layers on top
+	// of the top-level provider + Worker.Model defaults — leave a field
+	// empty to inherit. Operators rarely need this; the typical use case
+	// is "run security via Claude, logic via Codex". When the budget
+	// fallback engages, the per-worker overrides are abandoned in favour
+	// of LLM.Fallback (which may itself swap provider): the cheap path is
+	// uniform across workers.
+	Workers map[string]ModelSpec `yaml:"workers" json:"workers"`
 }
 
+// ModelSpec carries the (provider, model) for one role or per-worker
+// override. Provider may be empty — in which case the resolver inherits
+// LLM.Provider — and any non-empty value must be one of the validated
+// provider names (claude | codex | mock). The CLI invocation defaults
+// (bin, args, model_flag) for an override provider come from the built-in
+// defaults; operator-supplied `llm.cli.*` overrides apply ONLY to the
+// top-level provider, not per-worker / fallback overrides.
 type ModelSpec struct {
+	Provider        string `yaml:"provider" json:"provider"`
 	Model           string `yaml:"model" json:"model"`
 	MaxOutputTokens int    `yaml:"max_output_tokens" json:"max_output_tokens"`
 }
@@ -129,6 +211,10 @@ var validProviders = map[string]bool{
 	"claude": true, "codex": true, "mock": true,
 }
 
+var validPlatforms = map[string]bool{
+	"github": true, "gitlab": true, "bitbucket": true,
+}
+
 // Load reads + validates a config file. Unknown top-level keys are recorded
 // as warnings (not errors). Missing required sections are errors.
 func Load(path string) (*Config, error) {
@@ -154,7 +240,7 @@ func Parse(r io.Reader) (*Config, error) {
 	known := map[string]bool{
 		"version": true, "checks": true, "severity": true, "exclude": true,
 		"budget": true, "llm": true, "secrets": true, "sanitizer": true,
-		"integrations": true, "cache": true,
+		"integrations": true, "cache": true, "cve": true, "comments": true,
 	}
 	var warnings []string
 	for k := range generic {
@@ -181,14 +267,31 @@ func Parse(r io.Reader) (*Config, error) {
 	if !validProviders[cfg.LLM.Provider] {
 		return nil, fmt.Errorf("llm.provider: '%s' is not one of [claude, codex, mock]", cfg.LLM.Provider)
 	}
+	if cfg.LLM.Fallback.Provider != "" && !validProviders[cfg.LLM.Fallback.Provider] {
+		return nil, fmt.Errorf("llm.fallback.provider: '%s' is not one of [claude, codex, mock]", cfg.LLM.Fallback.Provider)
+	}
+	for name, spec := range cfg.LLM.Workers {
+		if spec.Provider != "" && !validProviders[spec.Provider] {
+			return nil, fmt.Errorf("llm.workers.%s.provider: '%s' is not one of [claude, codex, mock]", name, spec.Provider)
+		}
+	}
 	if cfg.Severity.Blocking != "" && !validSeverities[cfg.Severity.Blocking] {
 		return nil, fmt.Errorf("severity.blocking: '%s' is not one of [critical, high, medium, low, info]", cfg.Severity.Blocking)
 	}
 	if cfg.Severity.ReportMinimum != "" && !validSeverities[cfg.Severity.ReportMinimum] {
 		return nil, fmt.Errorf("severity.report_minimum: '%s' is not one of [critical, high, medium, low, info]", cfg.Severity.ReportMinimum)
 	}
+	if cfg.CVE.MinSeverity != "" && !validSeverities[cfg.CVE.MinSeverity] {
+		return nil, fmt.Errorf("cve.min_severity: '%s' is not one of [critical, high, medium, low, info]", cfg.CVE.MinSeverity)
+	}
+	if cfg.Comments.Platform != "" && !validPlatforms[cfg.Comments.Platform] {
+		return nil, fmt.Errorf("comments.platform: '%s' is not one of [github, gitlab, bitbucket]", cfg.Comments.Platform)
+	}
 
 	// Defaults.
+	if cfg.Budget.FallbackAt <= 0 || cfg.Budget.FallbackAt > 1 {
+		cfg.Budget.FallbackAt = 0.8
+	}
 	if cfg.Sanitizer.Delimiter == "" {
 		cfg.Sanitizer.Delimiter = "===CODE-UNDER-REVIEW==="
 	}

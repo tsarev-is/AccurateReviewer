@@ -20,15 +20,21 @@ BIN_DIR = REPO_ROOT / "bin"
 CLI_BIN = BIN_DIR / "accurate-reviewer"
 FAKE_CLI_SRC = Path(__file__).resolve().parent / "_fake_cli.py"
 TASK_FAKE_CLI_SRC = Path(__file__).resolve().parent / "_task_fake_cli.py"
+OSV_FAKE_SRC = Path(__file__).resolve().parent / "_fake_osv.py"
 
 # Names under which the fake is exposed in PATH. Any provider the feature
 # files name (`claude`, `codex`, `mock`) finds an executable to spawn.
 FAKE_NAMES = ("ar-mock-cli", "claude", "codex")
 
 # Task-fetch fakes: the names the integrations CLI commands would resolve
-# to in production (`gh`, `jira`). Shadowing real binaries on the test
-# workdir's PATH lets scenarios script their output without networking.
-TASK_FAKE_NAMES = ("gh", "jira")
+# to in production. Shadowing real binaries on the test workdir's PATH
+# lets scenarios script their output without networking.
+#
+# - gh/jira/linear: task-context trackers.
+# - glab/bb: post-comments platform CLIs (GitLab, Bitbucket).
+# All routes go through the same `_task_fake_cli.py` which records argv
+# and emits scripted output keyed by argv[0] basename.
+TASK_FAKE_NAMES = ("gh", "jira", "linear", "glab", "bb")
 
 
 def before_all(context):
@@ -38,6 +44,8 @@ def before_all(context):
         raise RuntimeError(f"missing fake CLI source: {FAKE_CLI_SRC}")
     if not TASK_FAKE_CLI_SRC.exists():
         raise RuntimeError(f"missing task fake CLI source: {TASK_FAKE_CLI_SRC}")
+    if not OSV_FAKE_SRC.exists():
+        raise RuntimeError(f"missing osv-scanner fake source: {OSV_FAKE_SRC}")
 
 
 def before_scenario(context, scenario):
@@ -65,6 +73,15 @@ def before_scenario(context, scenario):
         shutil.copy2(TASK_FAKE_CLI_SRC, dst)
         dst.chmod(0o755)
 
+    # osv-scanner fake — same trick. Scenarios that exercise the CVE
+    # pre-flight set $ACCURATE_REVIEWER_OSV_SCRIPT (a path holding the
+    # JSON payload the fake should echo) and $ACCURATE_REVIEWER_OSV_EXIT.
+    # Scenarios that DON'T touch CVEs still get the fake installed; with
+    # the default empty results it returns "{results: []}" → no findings.
+    osv_dst = fake_bin / "osv-scanner"
+    shutil.copy2(OSV_FAKE_SRC, osv_dst)
+    osv_dst.chmod(0o755)
+
     # Per-scenario script + prompt-log files. The fake CLI reads these
     # paths from the environment; helpers below mutate them.
     context.mock_script_path = context.workdir / ".ar-mock-script.json"
@@ -77,6 +94,13 @@ def before_scenario(context, scenario):
     context.task_fake_invocations = context.workdir / ".ar-task-fake-invocations.jsonl"
     context.task_fake_script.write_text("{}", encoding="utf-8")
     context.task_fake_invocations.write_text("", encoding="utf-8")
+
+    # osv-scanner fake state. Default script: empty results.
+    context.osv_script = context.workdir / ".ar-osv-script.json"
+    context.osv_invocations = context.workdir / ".ar-osv-invocations.jsonl"
+    context.osv_script.write_text('{"results": []}', encoding="utf-8")
+    context.osv_invocations.write_text("", encoding="utf-8")
+    context.osv_exit = "0"
 
     context.fake_bin_dir = fake_bin
     context.last_run = None
@@ -112,6 +136,9 @@ def run_cli(context, argv, *, stdin=None, cwd=None, extra_env=None):
     env["ACCURATE_REVIEWER_MOCK_PROMPT_LOG"] = str(context.mock_prompt_log)
     env["ACCURATE_REVIEWER_TASK_FAKE_SCRIPT"] = str(context.task_fake_script)
     env["ACCURATE_REVIEWER_TASK_FAKE_INVOCATIONS"] = str(context.task_fake_invocations)
+    env["ACCURATE_REVIEWER_OSV_SCRIPT"] = str(context.osv_script)
+    env["ACCURATE_REVIEWER_OSV_INVOCATIONS"] = str(context.osv_invocations)
+    env["ACCURATE_REVIEWER_OSV_EXIT"] = getattr(context, "osv_exit", "0")
     if getattr(context, "extra_env", None):
         env.update(context.extra_env)
     if extra_env:

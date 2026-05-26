@@ -124,11 +124,24 @@ const htmlBody = `<!DOCTYPE html>
 {{- range .Groups }}
 <section class="file"><h2>{{.File}}</h2><ol class="findings">
 {{- range .Findings }}
-<li class="finding sev-{{lower .Severity}}"><div class="head"><span class="sev">{{upper .Severity}}</span> <span class="loc">line {{.Line}}</span> <span class="title">{{.Title}}</span></div>
+<li class="finding sev-{{lower .Severity}}"><div class="head"><span class="sev">{{upper .Severity}}</span> <span class="loc">line {{.Line}}</span> <span class="title">{{.Title}}</span>
+{{- if .Fix }} <span class="fixbadge">fix available</span>{{end}}</div>
 {{- if .CWE }}
 <div class="cwe">{{.CWE}}</div>
 {{- end }}
 <div class="why">{{.Why}}</div>
+{{- if .Occurrences }}
+<div class="occurrences">also at:
+{{- range $i, $o := .Occurrences }}{{if $i}},{{end}} <code>{{$o.File}}:{{$o.Line}}</code>{{end}}</div>
+{{- end }}
+{{- if .Fix }}
+<details class="fix"><summary>Suggested fix{{if .Fix.Description}}: {{.Fix.Description}}{{end}}</summary>
+{{- range .Fix.Replacements }}
+<pre class="patch"><code>{{.File}}:{{.StartLine}}-{{.EndLine}}
+{{.NewText}}</code></pre>
+{{- end }}
+</details>
+{{- end }}
 {{- if .Worker }}
 <div class="worker">flagged by: {{.Worker}}</div>
 {{- end }}
@@ -165,6 +178,11 @@ li.finding.sev-info     { border-color: #64748b; }
 .sev-low .sev      { background: #2563eb; }
 .loc { color: #475569; font-family: ui-monospace, monospace; font-size: .85rem; }
 .title { font-weight: 600; }
-.cwe, .worker { font-size: .8rem; color: #64748b; margin-top: .25rem; }
+.cwe, .worker, .occurrences { font-size: .8rem; color: #64748b; margin-top: .25rem; }
+.occurrences code { background: #e2e8f0; padding: 1px 4px; border-radius: 3px; }
+.fixbadge { font-size: .65rem; font-weight: 700; padding: 1px 5px; border-radius: 3px; background: #16a34a; color: #fff; }
+details.fix { margin-top: .4rem; font-size: .85rem; }
+details.fix summary { cursor: pointer; color: #15803d; }
+pre.patch { background: #0f172a; color: #e2e8f0; padding: .5rem .75rem; border-radius: 4px; overflow-x: auto; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .8rem; margin: .35rem 0; }
 .why { margin-top: .35rem; line-height: 1.4; }
 `

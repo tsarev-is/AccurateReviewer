@@ -8,6 +8,14 @@ checks:
   security: true
   logic: true
   architecture: false   # off by default until startup analysis has run
+  # When true (default) and a project snapshot exists, workers receive a
+  # short language-specific guidance paragraph (Go race-classes, Python
+  # pickle, JS prototype pollution, etc.). Set to false to get the
+  # pre-v1.0 generic prompts on every language.
+  language_specific_prompts: true
+  # Pre-flight CVE scan over dependency manifests via osv-scanner.
+  # Optional: if osv-scanner is not installed the run continues.
+  vulnerabilities: true
 
 # Severity policy. The CLI exits non-zero when a finding's severity is at or
 # above `blocking`. Anything below is reported but does not fail the run.
@@ -28,6 +36,10 @@ exclude:
 budget:
   max_tokens: 200000
   max_usd: 1.00
+  # Fraction of max_tokens at which the master switches subsequent worker
+  # calls to llm.fallback.model (when configured). 0.8 leaves a buffer
+  # for in-flight workers to finish on the original model.
+  fallback_at: 0.8
 
 # LLM provider configuration. The tool only talks to models via a local CLI
 # subprocess — we deliberately do not embed an HTTP client for any vendor.
@@ -42,6 +54,12 @@ llm:
     max_output_tokens: 4096
   worker:
     model: claude-sonnet-4-6
+    max_output_tokens: 2048
+  # Cheaper worker model the master falls back to when the budget crosses
+  # budget.fallback_at. Provider stays the same as `worker`. Leave model
+  # empty to disable fallback entirely (run will hard-stop at MaxTokens).
+  fallback:
+    model: claude-haiku-4-5-20251001
     max_output_tokens: 2048
   # API key is read from env by the CLI itself, never from this file. Named
   # here only so the subprocess inherits it.
@@ -65,3 +83,23 @@ secrets:
 sanitizer:
   enabled: true
   delimiter: "===CODE-UNDER-REVIEW==="
+
+# Dependency-vulnerability scanner. The binary itself opens no network
+# sockets — osv-scanner handles all OSV-database lookups under its own
+# auth and caching. min_severity drops noise; default keeps everything.
+cve:
+  bin: osv-scanner
+  timeout_seconds: 60
+  min_severity: medium
+
+# How `post-comments` reaches the forge to publish inline review
+# comments. platform is auto-detected from the git remote when omitted
+# (github.com → github, gitlab.* → gitlab, bitbucket.* → bitbucket).
+# Per-platform `bin` overrides the CLI binary name; defaults are
+# gh / glab / bb. The binary itself opens no HTTP connections — auth
+# stays where the platform CLI already manages it.
+comments:
+  platform: github
+  github:   { bin: gh }
+  gitlab:   { bin: glab }
+  bitbucket: { bin: bb }

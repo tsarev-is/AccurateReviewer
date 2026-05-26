@@ -88,6 +88,47 @@ Feature: Optional task/issue context for review
     And every worker prompt contains "Investigate flaky test"
     And the task-fetch CLI "jira" was invoked with the id "PROJ-7"
 
+  @linear
+  Scenario: --linear fetches the issue body via the configured CLI
+    Given a .review.yml with llm.provider "mock" and linear integration command "linear issue view {id} --format markdown"
+    And the mock LLM is configured to return no findings
+    And the task-fetch CLI "linear" is scripted to print:
+      """
+      ENG-42: Add rate limiting to /api/login
+      Block more than 5 failed logins per minute per IP.
+      """
+    And a diff that adds a file "hello.go" with content:
+      """
+      package main
+      """
+    When I run "accurate-reviewer review --diff - --linear ENG-42" with that diff on stdin
+    Then the exit code is 0
+    And every worker prompt contains "Add rate limiting"
+    And the task-fetch CLI "linear" was invoked with the id "ENG-42"
+
+  @linear
+  Scenario: --linear without a configured command fails cleanly
+    Given a .review.yml with llm.provider set to "mock"
+    And a diff that adds a file "hello.go" with content:
+      """
+      package main
+      """
+    When I run "accurate-reviewer review --diff - --linear ENG-1" with that diff on stdin
+    Then the exit code is 2
+    And stderr contains "linear integration not configured"
+
+  @linear
+  Scenario: A failed linear fetch surfaces as a clean error
+    Given a .review.yml with llm.provider "mock" and linear integration command "linear issue view {id}"
+    And the task-fetch CLI "linear" is scripted to fail with "auth required"
+    And a diff that adds a file "hello.go" with content:
+      """
+      package main
+      """
+    When I run "accurate-reviewer review --diff - --linear ENG-99" with that diff on stdin
+    Then the exit code is 2
+    And stderr contains "linear fetch failed"
+
   Scenario: --github without a configured command fails cleanly
     Given a .review.yml with llm.provider set to "mock"
     And a diff that adds a file "hello.go" with content:
